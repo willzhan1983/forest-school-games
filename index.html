@@ -1185,7 +1185,10 @@ function drawMemory(){
     var flip = cd.anim;
     ctx.save();
     ctx.translate(r.x + r.w/2, r.y + r.h/2);
-    var sq = Math.abs(Math.cos(flip * Math.PI / 2));
+    /* 翻牌动画：背面(flip=0)宽度1 → 中线(flip=0.5)宽度0 → 正面(flip=1)宽度1。
+       之前用 cos(flip * π/2)，flip=1 时变成 0，卡片会压成一条细线，
+       导致翻开后"看不到"。改用 cos(flip * π) 取绝对值即可。 */
+    var sq = Math.abs(Math.cos(flip * Math.PI));
     ctx.scale(Math.max(0.06, sq), 1);
     if(flip < 0.5){
       ctx.fillStyle = '#6fb85c';
