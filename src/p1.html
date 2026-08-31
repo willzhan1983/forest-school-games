@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>森林学校 · 课间十分钟</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%8C%B0</text></svg>">
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#6fb85c;
+    -webkit-tap-highlight-color:transparent;overscroll-behavior:none;}
+  body{display:flex;align-items:center;justify-content:center;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;}
+  #wrap{position:relative;line-height:0;}
+  #game{display:block;touch-action:none;background:#bfe8f7;border-radius:10px;
+    box-shadow:0 10px 40px rgba(0,0,0,.28);}
+  #tip{position:absolute;left:50%;top:8px;transform:translateX(-50%);
+    background:rgba(28,44,36,.86);color:#fff;font-size:12px;line-height:1.5;
+    padding:8px 14px;border-radius:999px;white-space:nowrap;
+    display:none;align-items:center;gap:10px;z-index:5;}
+  #tip button{background:rgba(255,255,255,.2);border:0;color:#fff;font-size:12px;
+    padding:5px 12px;border-radius:999px;cursor:pointer;font-family:inherit;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="960" height="540"></canvas>
+  <div id="tip"><span>横屏玩更舒服，也可以继续竖屏</span><button id="tipClose">知道了</button></div>
+</div>
+<script>
+(function(){
+'use strict';
+
+/* ============================================================
+ * 1. 基础常量与画布
+ * ========================================================== */
+var W = 960, H = 540;
+var canvas = document.getElementById('game');
+var ctx = canvas.getContext('2d');
+var tipEl = document.getElementById('tip');
+var tipClose = document.getElementById('tipClose');
+
+function resize(){
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var availW = window.innerWidth, availH = window.innerHeight;
+  var s = Math.min(availW / W, availH / H);
+  s = Math.max(0.08, Math.min(s, 1.6));
+  var cssW = Math.round(W * s), cssH = Math.round(H * s);
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  /* 竖屏提示：非遮挡式，4 秒自动隐藏 */
+  if(availH > availW * 1.15 && availW < 760){
+    tipEl.style.display = 'flex';
+    clearTimeout(resize._t);
+    resize._t = setTimeout(function(){ tipEl.style.display = 'none'; }, 4000);
+  }else{
+    tipEl.style.display = 'none';
+  }
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', function(){ setTimeout(resize, 260); });
+if(tipClose) tipClose.addEventListener('click', function(){ tipEl.style.display = 'none'; });
+
+/* ============================================================
+ * 2. 绘图工具
+ * ========================================================== */
+function roundRect(x, y, w, h, r){
+  if(w < 2 * r) r = w / 2;
+  if(h < 2 * r) r = h / 2;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function clamp(v, a, b){ return v < a ? a : (v > b ? b : v); }
+function lerp(a, b, t){ return a + (b - a) * t; }
+function rnd(a, b){ return a + Math.random() * (b - a); }
+function rndInt(a, b){ return Math.floor(rnd(a, b + 1)); }
+function hitRect(x, y, r){ return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
+
+/* 森林主题背景（天空 + 远山 + 草地） */
+function drawBackdrop(t, night){
+  var g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, night > 0.3 ? '#5d7fa8' : '#bfe8f7');
+  g.addColorStop(0.62, night > 0.3 ? '#8aa3c0' : '#e8f6ec');
+  g.addColorStop(1, night > 0.3 ? '#9db08a' : '#d9f0c8');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  /* 远山 */
+  ctx.fillStyle = night > 0.3 ? 'rgba(70,92,120,.55)' : 'rgba(150,200,170,.55)';
+  ctx.beginPath();
+  ctx.moveTo(0, 330);
+  for(var i = 0; i <= 8; i++){
+    ctx.lineTo(i * 120, 330 - Math.sin(i * 1.1) * 44 - 20);
+  }
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+
+  /* 远处树影 */
+  ctx.fillStyle = night > 0.3 ? 'rgba(52,78,64,.45)' : 'rgba(120,180,130,.42)';
+  for(var k = 0; k < 7; k++){
+    var tx = ((k * 167 + t * 6) % (W + 160)) - 80;
+    ctx.beginPath();
+    ctx.ellipse(tx, 352, 52, 40, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillRect(tx - 6, 352, 12, 46);
+  }
+
+  /* 云 */
+  ctx.fillStyle = 'rgba(255,255,255,.75)';
+  for(var c = 0; c < 4; c++){
+    var cx = ((c * 280 + t * 10) % (W + 240)) - 120;
+    var cy = 60 + (c % 3) * 46;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 42, 20, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx + 34, cy + 5, 30, 16, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx - 32, cy + 6, 26, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /* 草地 */
+  ctx.fillStyle = night > 0.3 ? '#3f6b3a' : '#7fc96a';
+  ctx.fillRect(0, 400, W, H - 400);
+  ctx.fillStyle = night > 0.3 ? '#4a7a44' : '#8fd06a';
+  ctx.beginPath();
+  ctx.moveTo(0, 408);
+  for(var q = 0; q <= 16; q++){
+    ctx.lineTo(q * 60, 400 + Math.sin(q * 0.9) * 7);
+  }
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+
+  if(night > 0.02){
+    ctx.fillStyle = 'rgba(30,50,110,' + (night * 0.34) + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+/* 通用按钮 */
+function drawButton(r, label, fill, textColor, disabled){
+  ctx.globalAlpha = disabled ? 0.45 : 1;
+  ctx.fillStyle = fill;
+  roundRect(r.x, r.y, r.w, r.h, 14); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 2;
+  roundRect(r.x, r.y, r.w, r.h, 14); ctx.stroke();
+  ctx.fillStyle = textColor;
+  ctx.font = '500 22px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + 1);
+  ctx.globalAlpha = 1;
+}
+
+/* ============================================================
+ * 3. 音频：Web Audio 实时合成（音效 + 循环 BGM）
+ * ========================================================== */
+var Audio2 = {
+  enabled:true, ctx:null,
+  musicOn:true, musicCtx:null, musicGain:null, hatBuf:null,
+  /* C 大调五声音阶 32 步 A/B 句，与跑酷版同一首 */
+  MUSIC_MEL:[
+    392.00, 440.00, 523.25, 587.33, 659.25, 587.33, 523.25, 440.00,
+    392.00, 440.00, 523.25, 659.25, 587.33, 523.25, 440.00, 392.00,
+    523.25, 659.25, 783.99, 659.25, 587.33, 659.25, 523.25, 440.00,
+    523.25, 587.33, 659.25, 783.99, 880.00, 783.99, 659.25, 587.33
+  ],
+  MUSIC_BASS:[
+    65.41, 65.41, 55.00, 55.00, 43.65, 43.65, 49.00, 49.00,
+    65.41, 65.41, 43.65, 43.65, 49.00, 49.00, 49.00, 49.00
+  ],
+
+  init:function(){
+    if(this.ctx || !this.enabled) return;
+    try{
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if(!AC){ this.enabled = false; return; }
+      this.ctx = new AC();
+    }catch(e){ this.enabled = false; }
+  },
+
+  /* 基础音 */
+  tone:function(freq, dur, type, vol, delay){
+    if(!this.enabled) return;
+    this.init();
+    if(!this.ctx) return;
+    var t0 = this.ctx.currentTime + (delay || 0);
+    var o = this.ctx.createOscillator(), g = this.ctx.createGain();
+    o.type = type || 'triangle';
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol || 0.16), t0 + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(this.ctx.destination);
+    o.start(t0); o.stop(t0 + dur + 0.04);
+  },
+
+  click:function(){ this.tone(660, 0.09, 'triangle', 0.13); },
+  good:function(n){
+    var f = [523, 659, 784, 1047];
+    var i = Math.min(3, (n || 1) - 1);
+    this.tone(f[i], 0.16, 'triangle', 0.17);
+    this.tone(f[i] * 1.5, 0.12, 'sine', 0.07, 0.05);
+  },
+  bad:function(){ this.tone(180, 0.26, 'sawtooth', 0.13); this.tone(120, 0.3, 'sine', 0.1, 0.03); },
+  flip:function(){ this.tone(520, 0.07, 'square', 0.07); },
+  match:function(){ this.tone(659, 0.14, 'triangle', 0.15); this.tone(988, 0.2, 'sine', 0.1, 0.07); },
+  win:function(){
+    var self = this;
+    [523, 659, 784, 1046].forEach(function(f, i){ self.tone(f, 0.2, 'triangle', 0.15, i * 0.1); });
+  },
+  over:function(){
+    var self = this;
+    [440, 370, 294, 220].forEach(function(f, i){ self.tone(f, 0.24, 'sawtooth', 0.11, i * 0.12); });
+  },
+
+  /* ---- 循环 BGM ---- */
+  startMusic:function(){
+    if(!this.enabled || !this.musicOn || this.musicCtx) return;
+    this.init();
+    if(!this.ctx) return;
+    if(!this.musicGain){
+      this.musicGain = this.ctx.createGain();
+      this.musicGain.gain.value = 0.0001;
+      this.musicGain.connect(this.ctx.destination);
+    }
+    var now = this.ctx.currentTime;
+    this.musicGain.gain.cancelScheduledValues(now);
+    this.musicGain.gain.setValueAtTime(Math.max(0.0002, this.musicGain.gain.value), now);
+    this.musicGain.gain.exponentialRampToValueAtTime(0.85, now + 0.7);
+    this.musicCtx = { startTime:now + 0.15, beat:0.42, next:0 };
+    this._schedMusic();
+  },
+  _schedMusic:function(){
+    if(!this.musicCtx || !this.ctx) return;
+    var self = this, m = this.musicCtx, now = this.ctx.currentTime;
+    var lookahead = 1.0;
+    while(m.startTime + m.next * m.beat < now + lookahead){
+      var i = m.next;
+      var t = m.startTime + i * m.beat;
+      var f = this.MUSIC_MEL[i % 32];
+      this._musicNote(f, t, m.beat * 0.92, 0.048, 'triangle');
+      if(i % 2 === 0){
+        this._musicNote(this.MUSIC_BASS[(i / 2) % 16], t, m.beat * 1.7, 0.078, 'sine');
+      }
+      this._musicHat(t, i % 2 === 0 ? 0.028 : 0.013);
+      m.next++;
+    }
+    m.timer = setTimeout(function(){ self._schedMusic(); }, 200);
+  },
+  _musicNote:function(freq, t, dur, vol, type){
+    if(!this.ctx) return;
+    var o = this.ctx.createOscillator(), g = this.ctx.createGain();
+    o.type = type || 'triangle';
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(this.musicGain || this.ctx.destination);
+    o.start(t); o.stop(t + dur + 0.05);
+  },
+  _musicHat:function(t, vol){
+    if(!this.ctx || !(vol > 0.002)) return;
+    if(!this.hatBuf){
+      var rate = this.ctx.sampleRate, len = Math.floor(rate * 0.05);
+      this.hatBuf = this.ctx.createBuffer(1, len, rate);
+      var d = this.hatBuf.getChannelData(0);
+      for(var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+    }
+    var s = this.ctx.createBufferSource(); s.buffer = this.hatBuf;
+    var f = this.ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 6000;
+    var g = this.ctx.createGain(); g.gain.value = vol;
+    s.connect(f); f.connect(g); g.connect(this.musicGain || this.ctx.destination);
+    s.start(t);
+  },
+  stopMusic:function(){
+    var m = this.musicCtx;
+    if(m && m.timer) clearTimeout(m.timer);
+    this.musicCtx = null;
+    if(this.musicGain && this.ctx){
+      var g = this.musicGain, now = this.ctx.currentTime;
+      g.gain.cancelScheduledValues(now);
+      g.gain.setValueAtTime(Math.max(0.0002, g.gain.value), now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
+    }
+  },
+  toggleMusic:function(){
+    this.musicOn = !this.musicOn;
+    try{ localStorage.setItem('fsm_music', this.musicOn ? '1' : '0'); }catch(e){}
+    if(this.musicOn){ this.startMusic(); this.click(); }
+    else { this.stopMusic(); this.click(); }
+  },
+  /* 首次用户手势唤醒（浏览器自动播放策略） */
+  kick:function(){
+    this.init();
+    if(!this.ctx) return;
+    if(this.ctx.state === 'suspended'){ try{ this.ctx.resume(); }catch(e){} }
+    if(this.musicOn && !this.musicCtx) this.startMusic();
+  }
+};
+try{ var _mm = localStorage.getItem('fsm_music'); if(_mm !== null) Audio2.musicOn = (_mm === '1'); }catch(e){}

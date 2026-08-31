@@ -1,0 +1,687 @@
+
+/* ============================================================
+ * 7. 通用：难度配置读取 / 结算页
+ * ========================================================== */
+function diffIndex(){
+  for(var i = 0; i < DIFFS.length; i++) if(DIFFS[i].id === Game.diff) return i;
+  return 0;
+}
+function diffName(){
+  for(var i = 0; i < DIFFS.length; i++) if(DIFFS[i].id === Game.diff) return DIFFS[i].name;
+  return '简 单';
+}
+function curGame(){
+  for(var i = 0; i < GAMES.length; i++) if(GAMES[i].id === Game.gameId) return GAMES[i];
+  return GAMES[0];
+}
+
+function backRect(){ return { x:14, y:14, w:56, h:56 }; }
+
+function drawTopBar(label){
+  drawMusicBtn(musicRect());
+  var b = backRect();
+  b.x = 80;
+  ctx.fillStyle = 'rgba(0,0,0,.30)';
+  roundRect(b.x, b.y, b.w, b.h, 12); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 2;
+  roundRect(b.x, b.y, b.w, b.h, 12); ctx.stroke();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(b.x + 34, b.y + 18); ctx.lineTo(b.x + 22, b.y + 28); ctx.lineTo(b.x + 34, b.y + 38);
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(31,77,46,.82)';
+  ctx.font = '500 16px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.fillText(label + ' · ' + diffName(), W / 2, 30);
+
+  ctx.fillStyle = '#1f4d2e';
+  ctx.font = '500 26px system-ui,sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText(String(Game.score), W - 20, 30);
+}
+
+function heartsBox(){ return { x: W - 20 - 150, y: 48, w: 150, h: 26 }; }
+function drawHearts(n, max){
+  ctx.textAlign = 'right'; ctx.textBaseline = 'central';
+  ctx.fillStyle = 'rgba(31,77,46,.7)';
+  ctx.font = '400 13px system-ui,sans-serif';
+  ctx.fillText('机会', W - 20 - (max * 26) - 8, 61);
+  for(var i = 0; i < max; i++){
+    var x = W - 20 - i * 26 - 13, y = 61;
+    var alive = i < n;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(0.85, 0.85);
+    ctx.fillStyle = alive ? '#e8524f' : 'rgba(0,0,0,.22)';
+    ctx.beginPath();
+    ctx.moveTo(0, 6);
+    ctx.bezierCurveTo(-11, -3, -7, -12, 0, -6);
+    ctx.bezierCurveTo(7, -12, 11, -3, 0, 6);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function againRect(){ return { x: W/2 - 210, y: 392, w: 200, h: 62 }; }
+function homeRect(){ return { x: W/2 + 10, y: 392, w: 200, h: 62 }; }
+
+var resultInfo = { isNew:false, extra:'' };
+function endGame(score, extra){
+  Game.score = Math.floor(score);
+  resultInfo.isNew = saveBest(Game.gameId, Game.score);
+  resultInfo.extra = extra || '';
+  Game.state = 'result';
+  Game.time = 0;
+  if(resultInfo.isNew) Audio2.win(); else Audio2.over();
+}
+
+function drawResult(){
+  drawBackdrop(Game.time * 60, 0);
+  ctx.fillStyle = 'rgba(255,255,255,.82)';
+  roundRect(W/2 - 260, 96, 520, 268, 20); ctx.fill();
+  ctx.strokeStyle = 'rgba(60,80,70,.25)'; ctx.lineWidth = 1.5;
+  roundRect(W/2 - 260, 96, 520, 268, 20); ctx.stroke();
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = 'rgba(31,77,46,.72)';
+  ctx.font = '400 16px system-ui,sans-serif';
+  ctx.fillText(curGame().name + ' · ' + diffName(), W/2, 138);
+
+  ctx.fillStyle = '#1f4d2e';
+  ctx.font = '500 62px system-ui,sans-serif';
+  ctx.fillText(String(Game.score), W/2, 208);
+
+  if(resultInfo.isNew){
+    ctx.fillStyle = '#d8952a';
+    ctx.font = '500 17px system-ui,sans-serif';
+    ctx.fillText('新纪录！', W/2, 240);
+  }else{
+    ctx.fillStyle = 'rgba(31,77,46,.62)';
+    ctx.font = '400 15px system-ui,sans-serif';
+    ctx.fillText('最高分 ' + (Game.best[bestKey(Game.gameId)] || 0), W/2, 240);
+  }
+  if(resultInfo.extra){
+    ctx.fillStyle = 'rgba(31,77,46,.55)';
+    ctx.font = '400 14px system-ui,sans-serif';
+    ctx.fillText(resultInfo.extra, W/2, 272);
+  }
+
+  drawButton(againRect(), '再 来 一 次', '#4caf6d', '#ffffff');
+  drawButton(homeRect(), '换 个 游 戏', '#5b8fa8', '#ffffff');
+  drawMusicBtn(musicRect());
+}
+
+/* ============================================================
+ * 8. 游戏一：接橡果（涂涂滑翔）
+ * ========================================================== */
+var ACORN_CFG = {
+  easy:   { vy:2.1, gap:74, maxNuts:2, lives:5, moveSpd:7.5 },
+  normal: { vy:3.1, gap:54, maxNuts:3, lives:3, moveSpd:8.5 },
+  hard:   { vy:4.3, gap:40, maxNuts:4, lives:2, moveSpd:9.5 }
+};
+var Acorn = { owlX:0, owlVx:0, nuts:[], lives:0, maxLives:0, combo:0, best:0, spawnT:0, hurt:0, catchFx:[] };
+
+function startAcorn(){
+  var c = ACORN_CFG[Game.diff];
+  Acorn.owlX = W / 2; Acorn.owlVx = 0;
+  Acorn.nuts = []; Acorn.catchFx = [];
+  Acorn.lives = c.lives; Acorn.maxLives = c.lives;
+  Acorn.combo = 0; Acorn.best = 0;
+  Acorn.spawnT = 40; Acorn.hurt = 0;
+  Game.score = 0; Game.banner = 90;
+}
+function updateAcorn(dt){
+  var c = ACORN_CFG[Game.diff];
+  if(Acorn.hurt > 0) Acorn.hurt -= dt;
+
+  /* 移动：键盘或指针目标 */
+  var target = Input.pointX;
+  var kb = 0;
+  if(Input.keys['arrowleft'] || Input.keys['a']) kb -= 1;
+  if(Input.keys['arrowright'] || Input.keys['d']) kb += 1;
+  if(kb !== 0){
+    Acorn.owlVx = kb * c.moveSpd;
+    Input.pointX = null;
+  }else if(target !== null && target !== undefined){
+    var d = target - Acorn.owlX;
+    Acorn.owlVx = clamp(d * 0.22, -c.moveSpd * 1.6, c.moveSpd * 1.6);
+  }else{
+    /* 指数衰减而不是逐帧乘常数：否则 120Hz 上阻尼被算两遍，手感变黏 */
+    Acorn.owlVx *= Math.pow(0.82, dt);
+  }
+  Acorn.owlX = clamp(Acorn.owlX + Acorn.owlVx * dt, 40, W - 40);
+
+  /* 生成橡果 */
+  Acorn.spawnT -= dt;
+  if(Acorn.spawnT <= 0 && Acorn.nuts.length < c.maxNuts){
+    Acorn.nuts.push({ x: rnd(60, W - 60), y: -30, vy: c.vy * rnd(0.88, 1.14), rot: rnd(0, 6.28), vr: rnd(-0.08, 0.08), swing: rnd(0, 6.28) });
+    Acorn.spawnT = c.gap * rnd(0.75, 1.25);
+  }
+
+  /* 橡果下落与判定 */
+  var owlY = 424;
+  for(var i = Acorn.nuts.length - 1; i >= 0; i--){
+    var n = Acorn.nuts[i];
+    n.y += n.vy * dt; n.rot += n.vr * dt; n.swing += 0.06 * dt;
+    n.x += Math.sin(n.swing) * 0.7 * dt;
+    if(n.y > owlY - 26 && n.y < owlY + 46 && Math.abs(n.x - Acorn.owlX) < 52){
+      Acorn.nuts.splice(i, 1);
+      Acorn.combo++;
+      if(Acorn.combo > Acorn.best) Acorn.best = Acorn.combo;
+      var gain = 10 + Math.min(40, (Acorn.combo - 1) * 3);
+      Game.score += gain;
+      Audio2.good(Acorn.combo);
+      Acorn.catchFx.push({ x:n.x, y:owlY - 10, life:26, txt:'+' + gain });
+      continue;
+    }
+    if(n.y > H + 30){
+      Acorn.nuts.splice(i, 1);
+      Acorn.combo = 0;
+      Acorn.lives--;
+      Acorn.hurt = 18;
+      Audio2.bad();
+      if(Acorn.lives <= 0){
+        endGame(Game.score, '最高连击 ' + Acorn.best);
+        return;
+      }
+    }
+  }
+  for(var f = Acorn.catchFx.length - 1; f >= 0; f--){
+    Acorn.catchFx[f].life -= dt;
+    Acorn.catchFx[f].y -= 1.2 * dt;
+    if(Acorn.catchFx[f].life <= 0) Acorn.catchFx.splice(f, 1);
+  }
+}
+function drawAcorn(){
+  drawBackdrop(Game.time * 60, 0);
+
+  /* 接取范围提示 */
+  ctx.strokeStyle = 'rgba(255,255,255,.35)';
+  ctx.setLineDash([6, 6]); ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(Acorn.owlX - 52, 468); ctx.lineTo(Acorn.owlX + 52, 468);
+  ctx.stroke(); ctx.setLineDash([]);
+
+  /* 橡果 */
+  for(var i = 0; i < Acorn.nuts.length; i++){
+    var n = Acorn.nuts[i];
+    ctx.save();
+    ctx.translate(n.x, n.y); ctx.rotate(n.rot);
+    ctx.fillStyle = '#a9703f';
+    ctx.beginPath(); ctx.ellipse(0, 0, 11, 14, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#8a5a30';
+    ctx.beginPath(); ctx.ellipse(-4, -3, 3.5, 6, 0.4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#6b4522';
+    roundRect(-8, -18, 16, 7, 3); ctx.fill();
+    ctx.fillRect(-1.5, -22, 3, 6);
+    ctx.restore();
+  }
+
+  /* 涂涂（滑翔姿态） */
+  var oy = 424 + Math.sin(Game.time * 4) * 3;
+  ctx.save();
+  var tilt = clamp(Acorn.owlVx * 0.02, -0.28, 0.28);
+  ctx.translate(Acorn.owlX, oy); ctx.rotate(tilt);
+  if(Acorn.hurt > 0){ ctx.globalAlpha = 0.45 + Math.sin(Game.time * 40) * 0.3; }
+  var flap = Math.sin(Game.time * 6) * 8;
+  if(!drawCharImg(OWL_IMG, -52, -58 - flap * 0.2, 104, 108)) drawFallbackOwl(-52, -58, 104, 108);
+  /* 翅膀 */
+  ctx.fillStyle = 'rgba(242,185,60,.85)';
+  ctx.beginPath(); ctx.ellipse(-46, -18, 22, 11, -0.5 - flap * 0.03, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(46, -18, 22, 11, 0.5 + flap * 0.03, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+
+  /* 飘字 */
+  for(var f = 0; f < Acorn.catchFx.length; f++){
+    var fx = Acorn.catchFx[f];
+    ctx.globalAlpha = clamp(fx.life / 26, 0, 1);
+    ctx.fillStyle = '#1f4d2e';
+    ctx.font = '500 18px system-ui,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+    ctx.fillText(fx.txt, fx.x, fx.y);
+    ctx.globalAlpha = 1;
+  }
+
+  drawTopBar('接橡果');
+  drawHearts(Acorn.lives, Acorn.maxLives);
+  if(Acorn.combo >= 3){
+    ctx.fillStyle = '#d8952a';
+    ctx.font = '500 20px system-ui,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+    ctx.fillText('连击 ×' + Acorn.combo, W / 2, 66);
+  }
+}
+
+/* ============================================================
+ * 9. 游戏二：松鼠冲刺（钱钱）
+ * ========================================================== */
+/* 跳跃物理常量（px / 帧）。
+   滞空帧数 = 2*|DASH_JUMP_V| / DASH_GRAV，顶点高度 = DASH_JUMP_V² / (2*DASH_GRAV)。
+   DASH_AIR_FRAMES 用于推导障碍间距下限，改上面两个值时必须同步改这里。
+   旧值 0.62 / -13.2：滞空 43 帧、顶点 141px，配合旧的 78px 间距，
+   hard 档一跳横跨 319px ≈ 4.7 个障碍间距，落点必然砸在某根木头上。
+   间距修好之后真正要优化的是「起跳窗口」：实测 0.85/-14.9（滞空 35 帧）
+   只能给出 96~130ms，孩子反应不过来。放宽到 0.75/-14.25（滞空 38 帧、顶点 135px），
+   窗口翻倍到 ~200ms，间距下限由 1.5 倍跳跃距离自动跟着放大，不会再出现跨多个障碍。 */
+var DASH_GRAV = 0.75;
+var DASH_JUMP_V = -14.25;
+var DASH_AIR_FRAMES = 38;
+
+/* gap：障碍中心间距（px）。hMin/hMax：木头高度范围（px）。
+   三档的 gap 都按「1.5 × 一跳的横向距离」给，见 updateDash 里的下限保护。
+   旧值 easy130 / normal100 / hard78 对 68px 宽的判定盒来说净空只剩 34~76px，
+   猫根本塞不进两根木头之间 —— 那才是「我明明跳了还是撞」的根因。
+   注意 easy 的 spd 不要调太慢：与障碍的重叠时间 = (猫宽 68 + 木宽 34) / spd，
+   速度越慢重叠越久，可用的起跳窗口反而越窄 —— 实测 spd 4.6 时 easy 的窗口
+   比 hard 还紧，属于「简单档最难」的倒挂。5.6 是实测下来窗口和手感兼顾的值。 */
+var DASH_CFG = {
+  easy:   { spd:5.6, gap:320, cd:52, lives:5, hMin:28, hMax:40 },
+  normal: { spd:6.4, gap:365, cd:68, lives:3, hMin:44, hMax:62 },
+  hard:   { spd:7.6, gap:435, cd:86, lives:2, hMin:54, hMax:78 }
+};
+var Dash = {
+  y:0, vy:0, grounded:true, dashing:false, dashT:0, dashCd:0,
+  obs:[], lives:0, maxLives:0, dist:0, spawnT:0, hurt:0, fx:[], crashed:0
+};
+
+function startDash(){
+  var c = DASH_CFG[Game.diff];
+  Dash.y = 430; Dash.vy = 0; Dash.grounded = true;
+  Dash.dashing = false; Dash.dashT = 0; Dash.dashCd = 0;
+  Dash.obs = []; Dash.fx = [];
+  Dash.lives = c.lives; Dash.maxLives = c.lives;
+  Dash.dist = 0; Dash.spawnT = c.gap; Dash.hurt = 0; Dash.crashed = 0;
+  Game.score = 0; Game.banner = 90;
+}
+function updateDash(dt){
+  var c = DASH_CFG[Game.diff];
+  if(Dash.hurt > 0) Dash.hurt -= dt;
+
+  /* 物理 */
+  Dash.vy += DASH_GRAV * dt;
+  Dash.y += Dash.vy * dt;
+  if(Dash.y >= 430){ Dash.y = 430; Dash.vy = 0; Dash.grounded = true; }
+
+  /* 冲刺 */
+  if(Dash.dashCd > 0) Dash.dashCd -= dt;
+  if(Dash.dashing){
+    Dash.dashT -= dt;
+    if(Dash.dashT <= 0) Dash.dashing = false;
+  }
+
+  /* 前进与计分 */
+  var spd = c.spd * (Dash.dashing ? 1.9 : 1);
+  Dash.dist += spd * dt;
+  Game.score = Math.floor(Dash.dist / 12);
+
+  /* 生成障碍 */
+  Dash.spawnT -= spd * dt;
+  if(Dash.spawnT <= 0){
+    Dash.obs.push({ x: W + 40, w: 34, h: rndInt(c.hMin, c.hMax), broken: 0, kind: rndInt(0, 1) });
+    /* 间距硬下限 = 1.5 倍跳跃横向距离。保证一跳最多跨过一个障碍、
+       且空中一定落在两根木头之间的空地上；spd 用基础值，不吃冲刺的 1.9 倍。 */
+    var g = Math.max(c.gap, c.spd * DASH_AIR_FRAMES * 1.5);
+    Dash.spawnT = g * rnd(0.9, 1.35);
+  }
+
+  var cx = 190, cyTop = Dash.y - 62, cyBot = Dash.y + 6;
+  for(var i = Dash.obs.length - 1; i >= 0; i--){
+    var o = Dash.obs[i];
+    o.x -= spd * dt;
+    if(o.broken > 0){ o.broken -= dt; if(o.broken <= 0){ Dash.obs.splice(i, 1); continue; } continue; }
+    var ox0 = o.x - o.w / 2, ox1 = o.x + o.w / 2;
+    var hit = (ox1 > cx - 34 && ox0 < cx + 34);
+    if(hit){
+      var overIt = (cyBot < 430 - o.h + 10);
+      if(Dash.dashing){
+        /* 撞碎得分 */
+        Dash.obs.splice(i, 1);
+        Game.score += 10;
+        Dash.dist += 10 * 12;
+        for(var p = 0; p < 8; p++){
+          Dash.fx.push({ x:o.x, y:430 - o.h/2, vx:rnd(-4,4), vy:rnd(-6,-1), life:24, max:24, c:'#a9703f' });
+        }
+        Audio2.good(2);
+        continue;
+      }
+      if(overIt) continue;   /* 跳过去了 */
+      /* 撞上。
+         无敌帧只负责「不扣命」，不负责「不碰撞」：木头照常移除。
+         旧逻辑无敌期间什么都不做，木头留在原地继续往左走 —— 55 帧 × spd 7.6 = 418px，
+         足够白穿过 5 根木头（旧间距），而且无敌一结束还可能被同一根再扣一次。
+         缩短到 30 帧（hard 档 228px，跨不满一个间距）并把木头清掉。 */
+      if(Dash.hurt <= 0){
+        Dash.lives--; Dash.hurt = 30; Dash.crashed = 14;
+        Dash.dist = Math.max(0, Dash.dist - 60);
+        Audio2.bad();
+        if(Dash.lives <= 0){
+          Dash.obs.splice(i, 1);
+          endGame(Game.score, '跑出 ' + Math.floor(Dash.dist / 12) + ' 米');
+          return;
+        }
+      }
+      Dash.obs.splice(i, 1);
+    }
+    if(o.x < -60){ Dash.obs.splice(i, 1); }
+  }
+
+  for(var f = Dash.fx.length - 1; f >= 0; f--){
+    var p = Dash.fx[f];
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 0.35 * dt; p.life -= dt;
+    if(p.life <= 0) Dash.fx.splice(f, 1);
+  }
+  if(Dash.crashed > 0) Dash.crashed -= dt;
+}
+function drawDash(){
+  drawBackdrop(Game.time * 60, 0);
+  ctx.save();
+  if(Dash.crashed > 0) ctx.translate(rnd(-5, 5), rnd(-4, 4));
+
+  /* 地面线 */
+  ctx.strokeStyle = 'rgba(90,140,80,.5)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(0, 436); ctx.lineTo(W, 436); ctx.stroke();
+
+  /* 障碍（木桩 / 树枝堆） */
+  for(var i = 0; i < Dash.obs.length; i++){
+    var o = Dash.obs[i];
+    ctx.save();
+    ctx.translate(o.x, 436);
+    if(o.kind === 0){
+      ctx.fillStyle = '#8b5a3c';
+      roundRect(-o.w/2, -o.h, o.w, o.h, 6); ctx.fill();
+      ctx.fillStyle = 'rgba(0,0,0,.18)';
+      roundRect(-o.w/2, -o.h, o.w * 0.35, o.h, 6); ctx.fill();
+      ctx.fillStyle = '#a9703f';
+      ctx.beginPath(); ctx.ellipse(0, -o.h, o.w/2, 7, 0, 0, Math.PI * 2); ctx.fill();
+    }else{
+      ctx.fillStyle = '#9c6b45';
+      roundRect(-o.w/2, -o.h, o.w, o.h, 8); ctx.fill();
+      ctx.strokeStyle = 'rgba(60,40,24,.5)'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-o.w/2, -o.h * 0.6); ctx.lineTo(o.w/2, -o.h * 0.45);
+      ctx.moveTo(-o.w/2, -o.h * 0.3); ctx.lineTo(o.w/2, -o.h * 0.16);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /* 粒子 */
+  for(var f = 0; f < Dash.fx.length; f++){
+    var p = Dash.fx[f];
+    ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+    ctx.fillStyle = p.c;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  /* 钱钱 */
+  var run = Math.sin(Game.time * 14) * 4;
+  ctx.save();
+  ctx.translate(190, Dash.y - (Dash.grounded ? run * 0.3 : 0));
+  if(Dash.hurt > 0) ctx.globalAlpha = 0.4 + Math.sin(Game.time * 40) * 0.3;
+  if(Dash.dashing){
+    ctx.fillStyle = 'rgba(255,210,80,.45)';
+    ctx.beginPath(); ctx.ellipse(-20, -30, 54, 26, 0, 0, Math.PI * 2); ctx.fill();
+    for(var s = 0; s < 4; s++){
+      ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(-40 - s * 16, -46 + s * 14); ctx.lineTo(-66 - s * 16, -46 + s * 14);
+      ctx.stroke();
+    }
+  }
+  if(!drawCharImg(CAT_IMG, -54, -104, 108, 112)) drawFallbackCat(-54, -104, 108, 112);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  drawTopBar('松鼠冲刺');
+  drawHearts(Dash.lives, Dash.maxLives);
+
+  /* 冲刺冷却环 */
+  var cdR = { x: W/2 - 30, y: 74, w: 60, h: 12 };
+  var ready = Dash.dashCd <= 0 && !Dash.dashing;
+  var pct = Dash.dashing ? 1 : (ready ? 1 : 1 - Dash.dashCd / DASH_CFG[Game.diff].cd);
+  ctx.fillStyle = 'rgba(0,0,0,.22)';
+  roundRect(cdR.x, cdR.y, cdR.w, cdR.h, 6); ctx.fill();
+  ctx.fillStyle = ready ? '#f2b93c' : '#9aa8a0';
+  roundRect(cdR.x, cdR.y, cdR.w * clamp(pct, 0, 1), cdR.h, 6); ctx.fill();
+  ctx.fillStyle = 'rgba(31,77,46,.75)';
+  ctx.font = '400 12px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.fillText(ready ? '冲刺就绪' : '冲刺充能中', W/2, 96);
+
+  drawTouchBtns();
+}
+
+/* ============================================================
+ * 10. 游戏三：记忆翻牌
+ * ========================================================== */
+/* base：基础分。牌越多越难，基分给得越高，三档才有可比性 */
+var MEM_CFG = {
+  easy:   { cols:4, rows:3, base:1000 },
+  normal: { cols:4, rows:4, base:1200 },
+  hard:   { cols:6, rows:4, base:1400 }
+};
+var ANIMALS = [
+  { fur:'#e9e9ef', ear:'pointy', eye:'#5ec2f0', nose:'#f2909f' },
+  { fur:'#ffd45e', ear:'none',   eye:'#ffffff', beak:true },
+  { fur:'#f09048', ear:'pointy', eye:'#3a2a1e', white:true },
+  { fur:'#fbf7f2', ear:'long',   eye:'#e8798a', nose:'#e8798a' },
+  { fur:'#b07a48', ear:'round',  eye:'#33261c', nose:'#33261c', tail:true },
+  { fur:'#7fc96a', ear:'frog',   eye:'#ffffff', wide:true },
+  { fur:'#8a6b4f', ear:'spike',  eye:'#2f2a26', nose:'#2f2a26' },
+  { fur:'#5aa9e6', ear:'none',   eye:'#ffffff', beak:true, small:true },
+  { fur:'#b8bcc4', ear:'round',  eye:'#2f2a26', mask:true },
+  { fur:'#f6f4ef', ear:'panda',  eye:'#2f2a26', panda:true },
+  { fur:'#f4b8c4', ear:'pointy', eye:'#5a3a44', pig:true },
+  { fur:'#a9713f', ear:'round',  eye:'#2f2a26', snout:true }
+];
+function drawAnimalFace(cx, cy, s, k){
+  var a = ANIMALS[k % ANIMALS.length];
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(s, s);
+  /* 耳朵 */
+  ctx.fillStyle = a.fur;
+  if(a.ear === 'pointy'){
+    ctx.beginPath(); ctx.moveTo(-26, -18); ctx.lineTo(-30, -48); ctx.lineTo(-8, -30); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(26, -18); ctx.lineTo(30, -48); ctx.lineTo(8, -30); ctx.closePath(); ctx.fill();
+  }else if(a.ear === 'round'){
+    ctx.beginPath(); ctx.ellipse(-25, -30, 12, 12, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(25, -30, 12, 12, 0, 0, Math.PI*2); ctx.fill();
+  }else if(a.ear === 'long'){
+    ctx.beginPath(); ctx.ellipse(-15, -44, 8, 22, 0.15, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(15, -44, 8, 22, -0.15, 0, Math.PI*2); ctx.fill();
+  }else if(a.ear === 'spike'){
+    for(var q = 0; q < 7; q++){
+      var ang = Math.PI + q * (Math.PI / 6);
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(ang) * 28, Math.sin(ang) * 28);
+      ctx.lineTo(Math.cos(ang + 0.22) * 44, Math.sin(ang + 0.22) * 44);
+      ctx.lineTo(Math.cos(ang + 0.44) * 28, Math.sin(ang + 0.44) * 28);
+      ctx.closePath(); ctx.fill();
+    }
+  }else if(a.ear === 'frog'){
+    ctx.beginPath(); ctx.ellipse(-20, -34, 13, 13, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(20, -34, 13, 13, 0, 0, Math.PI*2); ctx.fill();
+  }else if(a.ear === 'panda'){
+    ctx.fillStyle = '#2f2a26';
+    ctx.beginPath(); ctx.ellipse(-25, -30, 13, 13, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(25, -30, 13, 13, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = a.fur;
+  }
+  /* 脸 */
+  ctx.fillStyle = a.fur;
+  ctx.beginPath(); ctx.ellipse(0, 0, 32, 30, 0, 0, Math.PI*2); ctx.fill();
+  if(a.white){
+    ctx.fillStyle = '#fbf7f2';
+    ctx.beginPath(); ctx.ellipse(0, 12, 18, 13, 0, 0, Math.PI*2); ctx.fill();
+  }
+  if(a.mask){
+    ctx.fillStyle = '#3a3f47';
+    ctx.fillRect(-30, -8, 60, 15);
+  }
+  if(a.panda){
+    ctx.fillStyle = '#2f2a26';
+    ctx.beginPath(); ctx.ellipse(0, 0, 32, 30, 0, 0, Math.PI*2); ctx.fill();
+  }
+  /* 眼睛 */
+  var ey = a.ear === 'frog' ? -22 : -4;
+  if(a.ear === 'frog'){
+    ctx.fillStyle = a.fur;
+    ctx.beginPath(); ctx.ellipse(-20, -34, 13, 13, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(20, -34, 13, 13, 0, 0, Math.PI*2); ctx.fill();
+  }
+  if(!a.panda){
+    ctx.fillStyle = a.eye;
+    ctx.beginPath(); ctx.ellipse(-12, ey, 8, 9, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(12, ey, 8, 9, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = a.ear === 'frog' ? '#2f2a26' : '#2f2a26';
+    ctx.beginPath(); ctx.ellipse(-12, ey, 4, 4.5, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(12, ey, 4, 4.5, 0, 0, Math.PI*2); ctx.fill();
+  }else{
+    ctx.fillStyle = '#f6f4ef';
+    ctx.beginPath(); ctx.ellipse(-12, -4, 9, 10, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(12, -4, 9, 10, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#2f2a26';
+    ctx.beginPath(); ctx.ellipse(-12, -4, 5, 5.5, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(12, -4, 5, 5.5, 0, 0, Math.PI*2); ctx.fill();
+  }
+  /* 嘴 / 鼻 */
+  if(a.beak){
+    ctx.fillStyle = '#ff9a4d';
+    ctx.beginPath(); ctx.moveTo(-8, 8); ctx.lineTo(8, 8); ctx.lineTo(0, 20); ctx.closePath(); ctx.fill();
+  }else if(a.wide){
+    ctx.strokeStyle = '#3f7a34'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(0, 8, 17, 0.25 * Math.PI, 0.75 * Math.PI); ctx.stroke();
+  }else if(a.pig){
+    ctx.fillStyle = '#e88fa4';
+    ctx.beginPath(); ctx.ellipse(0, 12, 12, 9, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#c96b82';
+    ctx.beginPath(); ctx.ellipse(-4, 12, 2.4, 3.4, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(4, 12, 2.4, 3.4, 0, 0, Math.PI*2); ctx.fill();
+  }else if(a.snout){
+    ctx.fillStyle = '#f0d9b8';
+    ctx.beginPath(); ctx.ellipse(0, 12, 13, 10, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#5a3f2a';
+    ctx.beginPath(); ctx.ellipse(0, 11, 4, 3.2, 0, 0, Math.PI*2); ctx.fill();
+  }else if(a.nose){
+    ctx.fillStyle = a.nose;
+    ctx.beginPath(); ctx.moveTo(-5, 8); ctx.lineTo(5, 8); ctx.lineTo(0, 15); ctx.closePath(); ctx.fill();
+  }else{
+    ctx.strokeStyle = 'rgba(60,50,45,.6)'; ctx.lineWidth = 2.4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-8, 12); ctx.quadraticCurveTo(0, 18, 8, 12); ctx.stroke();
+  }
+  if(a.tail){
+    ctx.fillStyle = a.fur;
+    ctx.beginPath(); ctx.ellipse(34, 18, 15, 20, 0.5, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+var Mem = { cards:[], cols:4, rows:3, cw:0, ch:0, x0:0, y0:0, first:-1, flips:0, matched:0, lockT:0, el:0 };
+
+function startMemory(){
+  var c = MEM_CFG[Game.diff];
+  Mem.cols = c.cols; Mem.rows = c.rows;
+  var pairs = Math.floor(Mem.cols * Mem.rows / 2);
+  var deck = [];
+  for(var i = 0; i < pairs; i++){ deck.push(i); deck.push(i); }
+  for(var s = deck.length - 1; s > 0; s--){
+    var j = rndInt(0, s); var t = deck[s]; deck[s] = deck[j]; deck[j] = t;
+  }
+  Mem.cards = deck.map(function(k){ return { k:k, open:false, done:false, anim:0 }; });
+  Mem.first = -1; Mem.flips = 0; Mem.matched = 0; Mem.lockT = 0; Mem.el = 0;
+  var maxW = W - 120, maxH = 300;
+  Mem.cw = Math.min(110, Math.floor(maxW / Mem.cols) - 10);
+  Mem.ch = Math.min(96, Math.floor(maxH / Mem.rows) - 8);
+  Mem.x0 = (W - (Mem.cw + 10) * Mem.cols + 10) / 2;
+  Mem.y0 = 150;
+  Game.score = 0; Game.banner = 90;
+}
+function memRect(i){
+  var r = Math.floor(i / Mem.cols), c = i % Mem.cols;
+  return { x: Mem.x0 + c * (Mem.cw + 10), y: Mem.y0 + r * (Mem.ch + 8), w: Mem.cw, h: Mem.ch };
+}
+function updateMemory(dt){
+  Mem.el += dt;
+  if(Mem.lockT > 0){
+    Mem.lockT -= dt;
+    if(Mem.lockT <= 0){
+      var a = Mem.cards[Mem.first], b = Mem.cards[Mem._second];
+      if(a && b){
+        if(a.k === b.k){ a.done = true; b.done = true; Mem.matched += 2; Audio2.match(); }
+        else { a.open = false; b.open = false; }
+      }
+      Mem.first = -1; Mem._second = -1;
+      if(Mem.matched >= Mem.cards.length){
+        var base = MEM_CFG[Game.diff].base;
+        /* Mem.el 累加的是帧数（dtF = dtSec * 60），不是秒。
+           这里漏了 /60 就变成每秒扣 240 分，4 秒即跌到下限 50 —— 每局都是 50 分，
+           saveBest 第一局之后再也触发不了「新纪录」。计分公式按秒写，就得按秒换算。 */
+        var timePenalty = Math.floor(Mem.el / 60 * 4);
+        var flipPenalty = Math.max(0, Mem.flips - Mem.cards.length) * 6;
+        Game.score = Math.max(50, base - timePenalty - flipPenalty);
+        endGame(Game.score, '用了 ' + Math.floor(Mem.el / 60) + ' 秒 · 翻了 ' + Mem.flips + ' 次');
+      }
+    }
+  }
+  for(var i = 0; i < Mem.cards.length; i++){
+    var cd = Mem.cards[i];
+    if(cd.open || cd.done){ if(cd.anim < 1) cd.anim = Math.min(1, cd.anim + dt * 0.18); }
+    else { if(cd.anim > 0) cd.anim = Math.max(0, cd.anim - dt * 0.18); }
+  }
+}
+function drawMemory(){
+  drawBackdrop(Game.time * 60, 0);
+  for(var i = 0; i < Mem.cards.length; i++){
+    var cd = Mem.cards[i], r = memRect(i);
+    if(cd.done){
+      ctx.fillStyle = 'rgba(255,255,255,.42)';
+      roundRect(r.x, r.y, r.w, r.h, 12); ctx.fill();
+      ctx.strokeStyle = 'rgba(76,175,109,.7)'; ctx.lineWidth = 2.5;
+      roundRect(r.x, r.y, r.w, r.h, 12); ctx.stroke();
+      ctx.globalAlpha = 0.55;
+      drawAnimalFace(r.x + r.w/2, r.y + r.h/2 + 2, Math.min(r.w, r.h) / 78, cd.k);
+      ctx.globalAlpha = 1;
+      continue;
+    }
+    var flip = cd.anim;
+    ctx.save();
+    ctx.translate(r.x + r.w/2, r.y + r.h/2);
+    /* 翻牌动画：背面(flip=0)宽度1 → 中线(flip=0.5)宽度0 → 正面(flip=1)宽度1。
+       之前用 cos(flip * π/2)，flip=1 时变成 0，卡片会压成一条细线，
+       导致翻开后"看不到"。改用 cos(flip * π) 取绝对值即可。 */
+    var sq = Math.abs(Math.cos(flip * Math.PI));
+    ctx.scale(Math.max(0.06, sq), 1);
+    if(flip < 0.5){
+      ctx.fillStyle = '#6fb85c';
+      roundRect(-r.w/2, -r.h/2, r.w, r.h, 12); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 2;
+      roundRect(-r.w/2, -r.h/2, r.w, r.h, 12); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,.78)';
+      ctx.beginPath();
+      ctx.moveTo(0, -14);
+      ctx.quadraticCurveTo(16, -4, 0, 16);
+      ctx.quadraticCurveTo(-16, -4, 0, -14);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(80,120,80,.6)';
+      ctx.fillRect(-1.5, -14, 3, 26);
+    }else{
+      ctx.fillStyle = '#fbf8ee';
+      roundRect(-r.w/2, -r.h/2, r.w, r.h, 12); ctx.fill();
+      ctx.strokeStyle = 'rgba(120,140,120,.5)'; ctx.lineWidth = 2;
+      roundRect(-r.w/2, -r.h/2, r.w, r.h, 12); ctx.stroke();
+      drawAnimalFace(0, 2, Math.min(r.w, r.h) / 78, cd.k);
+    }
+    ctx.restore();
+  }
+  drawTopBar('记忆翻牌');
+  ctx.fillStyle = 'rgba(31,77,46,.72)';
+  ctx.font = '400 14px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.fillText('已配对 ' + (Mem.matched / 2) + ' / ' + (Mem.cards.length / 2) +
+               '    翻牌 ' + Mem.flips + ' 次', W / 2, 66);
+}
