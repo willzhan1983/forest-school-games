@@ -421,6 +421,7 @@ var DIFF_X0 = (W - (DIFF_W * 3 + DIFF_GAP * 2)) / 2;
 function diffRect(i){ return { x: DIFF_X0 + i * (DIFF_W + DIFF_GAP), y: DIFF_Y, w: DIFF_W, h: DIFF_H }; }
 
 function musicRect(){ return { x:14, y:14, w:56, h:56 }; }
+function linkRect(){ return { x:850, y:14, w:96, h:44 }; }
 
 function drawMusicBtn(r){
   var on = Audio2.musicOn;
@@ -463,6 +464,18 @@ function drawMusicBtn(r){
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
+}
+
+function drawLinkBtn(r){
+  /* 菜单页右上角：跳转回跑酷篇 */
+  ctx.fillStyle = 'rgba(74,144,217,.95)';
+  roundRect(r.x, r.y, r.w, r.h, 10); ctx.fill();
+  ctx.strokeStyle = '#2b6bb0'; ctx.lineWidth = 2;
+  roundRect(r.x, r.y, r.w, r.h, 10); ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = '500 15px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.fillText('放学跑酷', r.x + r.w / 2, r.y + r.h / 2 + 1);
 }
 
 function drawMenu(){
@@ -540,12 +553,17 @@ function drawMenu(){
   }
 
   drawMusicBtn(musicRect());
+  drawLinkBtn(linkRect());
 
   ctx.fillStyle = 'rgba(31,77,46,.6)';
   ctx.font = '400 13px system-ui,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   ctx.fillText('键盘：← → 移动 · 空格 确认 / 动作 · 1 2 3 选游戏 · Esc 返回', W / 2, H - 34);
   ctx.fillText('触屏：点卡片选游戏，点难度，游戏中按屏幕提示操作', W / 2, H - 14);
+}
+
+function openRunner(){
+  try{ window.open('https://willzhan1983.github.io/forest-school-runner/', '_blank'); }catch(e){}
 }
 
 
@@ -1250,6 +1268,7 @@ canvas.addEventListener('pointerdown', function(e){
 
   if(Game.state === 'menu'){
     if(hitRect(p.x, p.y, musicRect())){ Audio2.toggleMusic(); return; }
+    if(hitRect(p.x, p.y, linkRect())){ Audio2.click(); openRunner(); return; }
     for(var i = 0; i < GAMES.length; i++){
       if(hitRect(p.x, p.y, cardRect(i))){
         Game.gameId = GAMES[i].id; Audio2.click();
@@ -1380,8 +1399,9 @@ window.__fsm = {
   GAMES:GAMES, DIFFS:DIFFS,
   Acorn:Acorn, Dash:Dash, Mem:Mem,
   startCurrent:startCurrent, endGame:endGame,
-  cardRect:cardRect, diffRect:diffRect, musicRect:musicRect,
-  againRect:againRect, homeRect:homeRect, memRect:memRect
+  cardRect:cardRect, diffRect:diffRect, musicRect:musicRect, linkRect:linkRect,
+  againRect:againRect, homeRect:homeRect, memRect:memRect,
+  openRunner:openRunner
 };
 
 resize();
