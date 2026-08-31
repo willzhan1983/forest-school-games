@@ -1,0 +1,252 @@
+
+/* ============================================================
+ * 11. 输入
+ * ========================================================== */
+var Input = { keys:{}, pointX:null, down:false, startY:0, touch:false };
+
+function toLogic(cx, cy){
+  var r = canvas.getBoundingClientRect();
+  return { x:(cx - r.left) / (r.width / W), y:(cy - r.top) / (r.height / H) };
+}
+
+window.addEventListener('keydown', function(e){
+  Audio2.init(); Audio2.kick();
+  var k = e.key.toLowerCase();
+  if([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].indexOf(k) >= 0) e.preventDefault();
+  if(Input.keys[k]) return;
+  Input.keys[k] = true;
+
+  if(Game.state === 'menu'){
+    if(k === '1' || k === '2' || k === '3'){
+      Game.gameId = GAMES[parseInt(k, 10) - 1].id; Audio2.click();
+    }else if(k === 'arrowleft' || k === 'a'){
+      var i = (diffIndex() + DIFFS.length - 1) % DIFFS.length;
+      Game.diff = DIFFS[i].id; saveDiff(); Audio2.click();
+    }else if(k === 'arrowright' || k === 'd'){
+      var j = (diffIndex() + 1) % DIFFS.length;
+      Game.diff = DIFFS[j].id; saveDiff(); Audio2.click();
+    }else if(k === ' ' || k === 'enter'){
+      Audio2.click(); startCurrent();
+    }
+  }else if(Game.state === 'result'){
+    if(k === ' ' || k === 'enter'){ Audio2.click(); startCurrent(); }
+    else if(k === 'escape'){ Audio2.click(); Game.state = 'menu'; }
+  }else{
+    if(k === 'escape'){ Audio2.click(); Game.state = 'menu'; }
+    else if(Game.gameId === 'dash' && (k === ' ' || k === 'arrowup' || k === 'w')){ doDashJump(); }
+    else if(Game.gameId === 'dash' && (k === 'd' || k === 'shift' || k === 'arrowright')){ doDashBurst(); }
+  }
+});
+window.addEventListener('keyup', function(e){ Input.keys[e.key.toLowerCase()] = false; });
+window.addEventListener('blur', function(){ Input.keys = {}; Input.pointX = null; Input.down = false; });
+
+canvas.addEventListener('pointerdown', function(e){
+  e.preventDefault();
+  Audio2.init(); Audio2.kick();
+  var p = toLogic(e.clientX, e.clientY);
+  Input.down = true; Input.startY = p.y;
+  if(e.pointerType && e.pointerType !== 'mouse') Input.touch = true;
+  try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
+
+  if(Game.state === 'menu'){
+    if(hitRect(p.x, p.y, musicRect())){ Audio2.toggleMusic(); return; }
+    if(hitRect(p.x, p.y, linkRect())){ Audio2.click(); openRunner(); return; }
+    for(var i = 0; i < GAMES.length; i++){
+      if(hitRect(p.x, p.y, cardRect(i))){
+        Game.gameId = GAMES[i].id; Audio2.click();
+        startCurrent(); return;
+      }
+    }
+    for(var d = 0; d < DIFFS.length; d++){
+      if(hitRect(p.x, p.y, diffRect(d))){
+        Game.diff = DIFFS[d].id; saveDiff(); Audio2.click(); return;
+      }
+    }
+  }else if(Game.state === 'result'){
+    if(hitRect(p.x, p.y, musicRect())){ Audio2.toggleMusic(); return; }
+    if(hitRect(p.x, p.y, againRect())){ Audio2.click(); startCurrent(); return; }
+    if(hitRect(p.x, p.y, homeRect())){ Audio2.click(); Game.state = 'menu'; return; }
+  }else{
+    if(hitRect(p.x, p.y, musicRect())){ Audio2.toggleMusic(); return; }
+    var b = backRect(); b.x = 80;
+    if(hitRect(p.x, p.y, b)){ Audio2.click(); Game.state = 'menu'; return; }
+
+    if(Game.gameId === 'acorn'){
+      Input.pointX = p.x;
+    }else if(Game.gameId === 'dash'){
+      /* 触屏映射：右下「冲刺」热区 → 冲刺；其余全部区域（含左下「跳」按钮）→ 跳。
+         旧逻辑按上下半屏区分，但钱钱画在 y 326~436、地面线在 436，整个角色都在下半屏，
+         孩子本能去点角色想让它跳，触发的却是冲刺 —— 映射和视觉完全对不上。 */
+      if(hitRect(p.x, p.y, burstZone())) doDashBurst(); else doDashJump();
+    }else if(Game.gameId === 'memory'){
+      if(Mem.lockT > 0) return;
+      for(var c = 0; c < Mem.cards.length; c++){
+        var cd = Mem.cards[c];
+        if(cd.done || cd.open) continue;
+        if(hitRect(p.x, p.y, memRect(c))){
+          cd.open = true; Mem.flips++; Audio2.flip();
+          if(Mem.first < 0) Mem.first = c;
+          else { Mem._second = c; Mem.lockT = 34; }
+          return;
+        }
+      }
+    }
+  }
+});
+
+canvas.addEventListener('pointermove', function(e){
+  if(e.pointerType && e.pointerType !== 'mouse') Input.touch = true;
+  if(Game.state !== 'play' || Game.gameId !== 'acorn') return;
+  var p = toLogic(e.clientX, e.clientY);
+  if(Input.down) Input.pointX = p.x;
+});
+canvas.addEventListener('pointerup', function(){
+  Input.down = false;
+  if(Game.gameId === 'acorn') Input.pointX = null;
+});
+canvas.addEventListener('pointercancel', function(){ Input.down = false; Input.pointX = null; });
+canvas.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+
+function saveDiff(){ try{ localStorage.setItem('fsm_diff', Game.diff); }catch(e){} }
+function doDashJump(){
+  if(Dash.grounded){ Dash.vy = DASH_JUMP_V; Dash.grounded = false; Audio2.tone(420, 0.1, 'triangle', 0.1); }
+}
+function doDashBurst(){
+  if(Dash.dashCd <= 0 && !Dash.dashing){
+    Dash.dashing = true; Dash.dashT = 22;
+    Dash.dashCd = DASH_CFG[Game.diff].cd;
+    Audio2.tone(300, 0.16, 'sawtooth', 0.14);
+    Audio2.tone(600, 0.12, 'square', 0.06);
+  }
+}
+function startCurrent(){
+  if(Game.gameId === 'acorn') startAcorn();
+  else if(Game.gameId === 'dash') startDash();
+  else startMemory();
+  Game.state = 'play';
+  Input.pointX = null;
+}
+
+/* ============================================================
+ * 11b. 松鼠冲刺的触屏按钮
+ * ========================================================== */
+var TouchBtn = {
+  jump:  { x:118,     y:442, r:56 },
+  burst: { x:W - 118, y:442, r:56 }
+};
+/* 冲刺热区比按钮本身大得多：孩子手指不一定戳得准，
+   点右边一整片都算冲刺；其他地方一律算跳（点空白默认跳）。 */
+function burstZone(){ return { x: W * 0.60, y: 300, w: W * 0.40, h: H - 300 }; }
+
+function drawTouchBtns(){
+  if(Game.gameId !== 'dash' || !Input.touch) return;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+
+  /* 左下：跳 */
+  var j = TouchBtn.jump;
+  ctx.globalAlpha = 0.9;
+  /* 草地本身亮度 ~180，按钮要用深色调 + 白圈白字才看得清；
+     半透明白叠在草地上实测只差 8 个亮度单位，孩子会以为那是块草地 */
+  ctx.fillStyle = 'rgba(47,122,70,.78)';
+  ctx.beginPath(); ctx.arc(j.x, j.y, j.r, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(j.x, j.y, j.r, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '500 30px system-ui,sans-serif';
+  ctx.fillText('跳', j.x, j.y + 2);
+
+  /* 右下：冲刺 + 冷却进度环 */
+  var b = TouchBtn.burst;
+  var cd = DASH_CFG[Game.diff].cd;
+  var ready = Dash.dashCd <= 0 && !Dash.dashing;
+  var pct = Dash.dashing ? 1 : (ready ? 1 : 1 - Dash.dashCd / cd);
+  ctx.globalAlpha = 0.9;
+  /* 就绪=深琥珀，冷却中=灰，两态亮度差足够大，一眼看出能不能按 */
+  ctx.fillStyle = ready ? 'rgba(194,106,18,.85)' : 'rgba(120,130,124,.62)';
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r + 8, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = ready ? '#f2b93c' : '#9aa8a0'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(pct, 0, 1));
+  ctx.stroke();
+  ctx.fillStyle = ready ? '#ffffff' : 'rgba(255,255,255,.72)';
+  ctx.font = '500 30px system-ui,sans-serif';
+  ctx.fillText('冲', b.x, b.y + 2);
+}
+
+/* ============================================================
+ * 12. 开场提示横幅
+ * ========================================================== */
+function bannerText(){
+  if(Game.gameId === 'acorn') return '← → 或手指拖动，移动涂涂接橡果';
+  if(Game.gameId === 'dash') return '↑ / 左下「跳」过木头   ·   D / 右下「冲刺」撞碎（+10 分）';
+  return '点开两张，一样的动物就配对成功';
+}
+function drawBanner(){
+  if(Game.banner <= 0) return;
+  var a = clamp(Game.banner / 30, 0, 1);
+  ctx.globalAlpha = a;
+  ctx.fillStyle = 'rgba(20,40,30,.72)';
+  roundRect(W/2 - 300, 122, 600, 44, 22); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = '400 15px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.fillText(bannerText(), W/2, 144);
+  ctx.globalAlpha = 1;
+}
+
+/* ============================================================
+ * 13. 主循环
+ * ========================================================== */
+var lastT = 0;
+function loop(ts){
+  requestAnimationFrame(loop);
+  if(!lastT) lastT = ts;
+  var dtSec = Math.min(0.05, (ts - lastT) / 1000);
+  lastT = ts;
+  Game.time += dtSec;
+  var dtF = dtSec * 60;
+
+  if(Game.state === 'play'){
+    if(Game.banner > 0) Game.banner = Math.max(0, Game.banner - dtF);
+    if(Game.gameId === 'acorn') updateAcorn(dtF);
+    else if(Game.gameId === 'dash') updateDash(dtF);
+    else if(Game.gameId === 'memory') updateMemory(dtF);
+  }
+
+  ctx.clearRect(0, 0, W, H);
+  if(Game.state === 'menu') drawMenu();
+  else if(Game.state === 'result') drawResult();
+  else if(Game.gameId === 'acorn') drawAcorn();
+  else if(Game.gameId === 'dash') drawDash();
+  else drawMemory();
+
+  if(Game.state === 'play') drawBanner();
+}
+
+/* ============================================================
+ * 14. 启动
+ * ========================================================== */
+window.__fsm = {
+  Game:Game, Audio2:Audio2, Input:Input,
+  GAMES:GAMES, DIFFS:DIFFS,
+  Acorn:Acorn, Dash:Dash, Mem:Mem,
+  startCurrent:startCurrent, endGame:endGame,
+  cardRect:cardRect, diffRect:diffRect, musicRect:musicRect, linkRect:linkRect,
+  againRect:againRect, homeRect:homeRect, memRect:memRect,
+  openRunner:openRunner,
+  TouchBtn:TouchBtn, burstZone:burstZone,
+  /* 手动步进：给诊断脚本用，可以脱离 rAF 快进验证帧率不变性 */
+  _step:{ acorn:updateAcorn, dash:updateDash, memory:updateMemory }
+};
+
+resize();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

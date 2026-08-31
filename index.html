@@ -383,27 +383,49 @@ var Game = {
   diff:'easy',
   score:0,
   time:0,
-  best:{ acorn:0, dash:0, memory:0 },
+  best:{},               /* 键形如 'acorn_hard'，见 bestKey() */
   banner:0,
   flash:0
 };
 
+/* 最高分按「游戏 × 难度」分开存。
+   旧版三档共用一个 fsm_best_<game>：接橡果 easy 档橡果落得慢（vy 2.1）几乎打不死，
+   随手刷个 800 分之后，normal / hard 就再也打不出「新纪录」了 ——
+   孩子唯一的长期激励直接失效。 */
+function bestKey(id, diff){ return id + '_' + (diff || Game.diff); }
+
 function loadBest(){
   try{
-    ['acorn','dash','memory'].forEach(function(k){
-      var v = parseInt(localStorage.getItem('fsm_best_' + k) || '0', 10);
-      Game.best[k] = isNaN(v) ? 0 : v;
-    });
     var d = localStorage.getItem('fsm_diff');
     if(d && DIFFS.some(function(x){ return x.id === d; })) Game.diff = d;
+    ['acorn','dash','memory'].forEach(function(k){
+      var hasNew = false;
+      DIFFS.forEach(function(dd){
+        var raw = localStorage.getItem('fsm_best_' + k + '_' + dd.id);
+        var v = parseInt(raw || '0', 10);
+        Game.best[bestKey(k, dd.id)] = isNaN(v) ? 0 : v;
+        if(raw !== null) hasNew = true;
+      });
+      /* 迁移：旧存档只有一个 fsm_best_<game>。只有在没有任何按难度的新键时，
+         才把旧值搬给当前难度，避免孩子的纪录被清零；只搬当前一档，
+         防止把 easy 刷出来的高分污染 normal / hard（那正是要修的 bug）。 */
+      if(!hasNew){
+        var old = parseInt(localStorage.getItem('fsm_best_' + k) || '0', 10);
+        if(!isNaN(old) && old > 0){
+          Game.best[bestKey(k, Game.diff)] = old;
+          localStorage.setItem('fsm_best_' + bestKey(k, Game.diff), String(old));
+        }
+      }
+    });
   }catch(e){}
 }
 loadBest();
 
 function saveBest(id, score){
-  if(score > Game.best[id]){
-    Game.best[id] = score;
-    try{ localStorage.setItem('fsm_best_' + id, String(score)); }catch(e){}
+  var key = bestKey(id);
+  if(score > (Game.best[key] || 0)){
+    Game.best[key] = score;
+    try{ localStorage.setItem('fsm_best_' + key, String(score)); }catch(e){}
     return true;
   }
   return false;
@@ -520,7 +542,8 @@ function drawMenu(){
 
     ctx.fillStyle = '#8a6d3b';
     ctx.font = '500 14px system-ui,sans-serif';
-    ctx.fillText('最高分 ' + Game.best[g.id], cx, r.y + 200);
+    /* 显示当前所选难度的最高分，切难度时跟着变 */
+    ctx.fillText('最高分 ' + (Game.best[bestKey(g.id)] || 0), cx, r.y + 200);
 
     if(sel){
       ctx.fillStyle = 'rgba(76,175,109,.16)';
@@ -667,7 +690,7 @@ function drawResult(){
   }else{
     ctx.fillStyle = 'rgba(31,77,46,.62)';
     ctx.font = '400 15px system-ui,sans-serif';
-    ctx.fillText('最高分 ' + Game.best[Game.gameId], W/2, 240);
+    ctx.fillText('最高分 ' + (Game.best[bestKey(Game.gameId)] || 0), W/2, 240);
   }
   if(resultInfo.extra){
     ctx.fillStyle = 'rgba(31,77,46,.55)';
@@ -715,12 +738,13 @@ function updateAcorn(dt){
     var d = target - Acorn.owlX;
     Acorn.owlVx = clamp(d * 0.22, -c.moveSpd * 1.6, c.moveSpd * 1.6);
   }else{
-    Acorn.owlVx *= 0.82;
+    /* 指数衰减而不是逐帧乘常数：否则 120Hz 上阻尼被算两遍，手感变黏 */
+    Acorn.owlVx *= Math.pow(0.82, dt);
   }
-  Acorn.owlX = clamp(Acorn.owlX + Acorn.owlVx, 40, W - 40);
+  Acorn.owlX = clamp(Acorn.owlX + Acorn.owlVx * dt, 40, W - 40);
 
   /* 生成橡果 */
-  Acorn.spawnT -= 1;
+  Acorn.spawnT -= dt;
   if(Acorn.spawnT <= 0 && Acorn.nuts.length < c.maxNuts){
     Acorn.nuts.push({ x: rnd(60, W - 60), y: -30, vy: c.vy * rnd(0.88, 1.14), rot: rnd(0, 6.28), vr: rnd(-0.08, 0.08), swing: rnd(0, 6.28) });
     Acorn.spawnT = c.gap * rnd(0.75, 1.25);
@@ -730,8 +754,8 @@ function updateAcorn(dt){
   var owlY = 424;
   for(var i = Acorn.nuts.length - 1; i >= 0; i--){
     var n = Acorn.nuts[i];
-    n.y += n.vy; n.rot += n.vr; n.swing += 0.06;
-    n.x += Math.sin(n.swing) * 0.7;
+    n.y += n.vy * dt; n.rot += n.vr * dt; n.swing += 0.06 * dt;
+    n.x += Math.sin(n.swing) * 0.7 * dt;
     if(n.y > owlY - 26 && n.y < owlY + 46 && Math.abs(n.x - Acorn.owlX) < 52){
       Acorn.nuts.splice(i, 1);
       Acorn.combo++;
@@ -755,8 +779,8 @@ function updateAcorn(dt){
     }
   }
   for(var f = Acorn.catchFx.length - 1; f >= 0; f--){
-    Acorn.catchFx[f].life -= 1;
-    Acorn.catchFx[f].y -= 1.2;
+    Acorn.catchFx[f].life -= dt;
+    Acorn.catchFx[f].y -= 1.2 * dt;
     if(Acorn.catchFx[f].life <= 0) Acorn.catchFx.splice(f, 1);
   }
 }
@@ -824,10 +848,29 @@ function drawAcorn(){
 /* ============================================================
  * 9. 游戏二：松鼠冲刺（钱钱）
  * ========================================================== */
+/* 跳跃物理常量（px / 帧）。
+   滞空帧数 = 2*|DASH_JUMP_V| / DASH_GRAV，顶点高度 = DASH_JUMP_V² / (2*DASH_GRAV)。
+   DASH_AIR_FRAMES 用于推导障碍间距下限，改上面两个值时必须同步改这里。
+   旧值 0.62 / -13.2：滞空 43 帧、顶点 141px，配合旧的 78px 间距，
+   hard 档一跳横跨 319px ≈ 4.7 个障碍间距，落点必然砸在某根木头上。
+   间距修好之后真正要优化的是「起跳窗口」：实测 0.85/-14.9（滞空 35 帧）
+   只能给出 96~130ms，孩子反应不过来。放宽到 0.75/-14.25（滞空 38 帧、顶点 135px），
+   窗口翻倍到 ~200ms，间距下限由 1.5 倍跳跃距离自动跟着放大，不会再出现跨多个障碍。 */
+var DASH_GRAV = 0.75;
+var DASH_JUMP_V = -14.25;
+var DASH_AIR_FRAMES = 38;
+
+/* gap：障碍中心间距（px）。hMin/hMax：木头高度范围（px）。
+   三档的 gap 都按「1.5 × 一跳的横向距离」给，见 updateDash 里的下限保护。
+   旧值 easy130 / normal100 / hard78 对 68px 宽的判定盒来说净空只剩 34~76px，
+   猫根本塞不进两根木头之间 —— 那才是「我明明跳了还是撞」的根因。
+   注意 easy 的 spd 不要调太慢：与障碍的重叠时间 = (猫宽 68 + 木宽 34) / spd，
+   速度越慢重叠越久，可用的起跳窗口反而越窄 —— 实测 spd 4.6 时 easy 的窗口
+   比 hard 还紧，属于「简单档最难」的倒挂。5.6 是实测下来窗口和手感兼顾的值。 */
 var DASH_CFG = {
-  easy:   { spd:4.6, gap:130, cd:52, lives:5 },
-  normal: { spd:6.0, gap:100, cd:68, lives:3 },
-  hard:   { spd:7.6, gap:78, cd:86, lives:2 }
+  easy:   { spd:5.6, gap:320, cd:52, lives:5, hMin:28, hMax:40 },
+  normal: { spd:6.4, gap:365, cd:68, lives:3, hMin:44, hMax:62 },
+  hard:   { spd:7.6, gap:435, cd:86, lives:2, hMin:54, hMax:78 }
 };
 var Dash = {
   y:0, vy:0, grounded:true, dashing:false, dashT:0, dashCd:0,
@@ -840,7 +883,7 @@ function startDash(){
   Dash.dashing = false; Dash.dashT = 0; Dash.dashCd = 0;
   Dash.obs = []; Dash.fx = [];
   Dash.lives = c.lives; Dash.maxLives = c.lives;
-  Dash.dist = 0; Dash.spawnT = 60; Dash.hurt = 0; Dash.crashed = 0;
+  Dash.dist = 0; Dash.spawnT = c.gap; Dash.hurt = 0; Dash.crashed = 0;
   Game.score = 0; Game.banner = 90;
 }
 function updateDash(dt){
@@ -848,34 +891,37 @@ function updateDash(dt){
   if(Dash.hurt > 0) Dash.hurt -= dt;
 
   /* 物理 */
-  Dash.vy += 0.62;
-  Dash.y += Dash.vy;
+  Dash.vy += DASH_GRAV * dt;
+  Dash.y += Dash.vy * dt;
   if(Dash.y >= 430){ Dash.y = 430; Dash.vy = 0; Dash.grounded = true; }
 
   /* 冲刺 */
-  if(Dash.dashCd > 0) Dash.dashCd -= 1;
+  if(Dash.dashCd > 0) Dash.dashCd -= dt;
   if(Dash.dashing){
-    Dash.dashT -= 1;
+    Dash.dashT -= dt;
     if(Dash.dashT <= 0) Dash.dashing = false;
   }
 
   /* 前进与计分 */
   var spd = c.spd * (Dash.dashing ? 1.9 : 1);
-  Dash.dist += spd;
+  Dash.dist += spd * dt;
   Game.score = Math.floor(Dash.dist / 12);
 
   /* 生成障碍 */
-  Dash.spawnT -= spd;
+  Dash.spawnT -= spd * dt;
   if(Dash.spawnT <= 0){
-    Dash.obs.push({ x: W + 40, w: 34, h: rndInt(46, 74), broken: 0, kind: rndInt(0, 1) });
-    Dash.spawnT = c.gap * rnd(0.82, 1.3);
+    Dash.obs.push({ x: W + 40, w: 34, h: rndInt(c.hMin, c.hMax), broken: 0, kind: rndInt(0, 1) });
+    /* 间距硬下限 = 1.5 倍跳跃横向距离。保证一跳最多跨过一个障碍、
+       且空中一定落在两根木头之间的空地上；spd 用基础值，不吃冲刺的 1.9 倍。 */
+    var g = Math.max(c.gap, c.spd * DASH_AIR_FRAMES * 1.5);
+    Dash.spawnT = g * rnd(0.9, 1.35);
   }
 
   var cx = 190, cyTop = Dash.y - 62, cyBot = Dash.y + 6;
   for(var i = Dash.obs.length - 1; i >= 0; i--){
     var o = Dash.obs[i];
-    o.x -= spd;
-    if(o.broken > 0){ o.broken -= 1; if(o.broken <= 0){ Dash.obs.splice(i, 1); continue; } continue; }
+    o.x -= spd * dt;
+    if(o.broken > 0){ o.broken -= dt; if(o.broken <= 0){ Dash.obs.splice(i, 1); continue; } continue; }
     var ox0 = o.x - o.w / 2, ox1 = o.x + o.w / 2;
     var hit = (ox1 > cx - 34 && ox0 < cx + 34);
     if(hit){
@@ -892,27 +938,32 @@ function updateDash(dt){
         continue;
       }
       if(overIt) continue;   /* 跳过去了 */
-      /* 撞上 */
+      /* 撞上。
+         无敌帧只负责「不扣命」，不负责「不碰撞」：木头照常移除。
+         旧逻辑无敌期间什么都不做，木头留在原地继续往左走 —— 55 帧 × spd 7.6 = 418px，
+         足够白穿过 5 根木头（旧间距），而且无敌一结束还可能被同一根再扣一次。
+         缩短到 30 帧（hard 档 228px，跨不满一个间距）并把木头清掉。 */
       if(Dash.hurt <= 0){
-        Dash.lives--; Dash.hurt = 55; Dash.crashed = 14;
+        Dash.lives--; Dash.hurt = 30; Dash.crashed = 14;
         Dash.dist = Math.max(0, Dash.dist - 60);
         Audio2.bad();
-        Dash.obs.splice(i, 1);
         if(Dash.lives <= 0){
+          Dash.obs.splice(i, 1);
           endGame(Game.score, '跑出 ' + Math.floor(Dash.dist / 12) + ' 米');
           return;
         }
       }
+      Dash.obs.splice(i, 1);
     }
     if(o.x < -60){ Dash.obs.splice(i, 1); }
   }
 
   for(var f = Dash.fx.length - 1; f >= 0; f--){
     var p = Dash.fx[f];
-    p.x += p.vx; p.y += p.vy; p.vy += 0.35; p.life -= 1;
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 0.35 * dt; p.life -= dt;
     if(p.life <= 0) Dash.fx.splice(f, 1);
   }
-  if(Dash.crashed > 0) Dash.crashed -= 1;
+  if(Dash.crashed > 0) Dash.crashed -= dt;
 }
 function drawDash(){
   drawBackdrop(Game.time * 60, 0);
@@ -991,15 +1042,18 @@ function drawDash(){
   ctx.font = '400 12px system-ui,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'central';
   ctx.fillText(ready ? '冲刺就绪' : '冲刺充能中', W/2, 96);
+
+  drawTouchBtns();
 }
 
 /* ============================================================
  * 10. 游戏三：记忆翻牌
  * ========================================================== */
+/* base：基础分。牌越多越难，基分给得越高，三档才有可比性 */
 var MEM_CFG = {
-  easy:   { cols:4, rows:3 },
-  normal: { cols:4, rows:4 },
-  hard:   { cols:6, rows:4 }
+  easy:   { cols:4, rows:3, base:1000 },
+  normal: { cols:4, rows:4, base:1200 },
+  hard:   { cols:6, rows:4, base:1400 }
 };
 var ANIMALS = [
   { fur:'#e9e9ef', ear:'pointy', eye:'#5ec2f0', nose:'#f2909f' },
@@ -1154,8 +1208,11 @@ function updateMemory(dt){
       }
       Mem.first = -1; Mem._second = -1;
       if(Mem.matched >= Mem.cards.length){
-        var base = 1000;
-        var timePenalty = Math.floor(Mem.el * 4);
+        var base = MEM_CFG[Game.diff].base;
+        /* Mem.el 累加的是帧数（dtF = dtSec * 60），不是秒。
+           这里漏了 /60 就变成每秒扣 240 分，4 秒即跌到下限 50 —— 每局都是 50 分，
+           saveBest 第一局之后再也触发不了「新纪录」。计分公式按秒写，就得按秒换算。 */
+        var timePenalty = Math.floor(Mem.el / 60 * 4);
         var flipPenalty = Math.max(0, Mem.flips - Mem.cards.length) * 6;
         Game.score = Math.max(50, base - timePenalty - flipPenalty);
         endGame(Game.score, '用了 ' + Math.floor(Mem.el / 60) + ' 秒 · 翻了 ' + Mem.flips + ' 次');
@@ -1224,7 +1281,7 @@ function drawMemory(){
 /* ============================================================
  * 11. 输入
  * ========================================================== */
-var Input = { keys:{}, pointX:null, down:false, startY:0 };
+var Input = { keys:{}, pointX:null, down:false, startY:0, touch:false };
 
 function toLogic(cx, cy){
   var r = canvas.getBoundingClientRect();
@@ -1267,6 +1324,7 @@ canvas.addEventListener('pointerdown', function(e){
   Audio2.init(); Audio2.kick();
   var p = toLogic(e.clientX, e.clientY);
   Input.down = true; Input.startY = p.y;
+  if(e.pointerType && e.pointerType !== 'mouse') Input.touch = true;
   try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
 
   if(Game.state === 'menu'){
@@ -1295,7 +1353,10 @@ canvas.addEventListener('pointerdown', function(e){
     if(Game.gameId === 'acorn'){
       Input.pointX = p.x;
     }else if(Game.gameId === 'dash'){
-      if(p.y < H * 0.5) doDashJump(); else doDashBurst();
+      /* 触屏映射：右下「冲刺」热区 → 冲刺；其余全部区域（含左下「跳」按钮）→ 跳。
+         旧逻辑按上下半屏区分，但钱钱画在 y 326~436、地面线在 436，整个角色都在下半屏，
+         孩子本能去点角色想让它跳，触发的却是冲刺 —— 映射和视觉完全对不上。 */
+      if(hitRect(p.x, p.y, burstZone())) doDashBurst(); else doDashJump();
     }else if(Game.gameId === 'memory'){
       if(Mem.lockT > 0) return;
       for(var c = 0; c < Mem.cards.length; c++){
@@ -1313,6 +1374,7 @@ canvas.addEventListener('pointerdown', function(e){
 });
 
 canvas.addEventListener('pointermove', function(e){
+  if(e.pointerType && e.pointerType !== 'mouse') Input.touch = true;
   if(Game.state !== 'play' || Game.gameId !== 'acorn') return;
   var p = toLogic(e.clientX, e.clientY);
   if(Input.down) Input.pointX = p.x;
@@ -1326,7 +1388,7 @@ canvas.addEventListener('contextmenu', function(e){ e.preventDefault(); });
 
 function saveDiff(){ try{ localStorage.setItem('fsm_diff', Game.diff); }catch(e){} }
 function doDashJump(){
-  if(Dash.grounded){ Dash.vy = -13.2; Dash.grounded = false; Audio2.tone(420, 0.1, 'triangle', 0.1); }
+  if(Dash.grounded){ Dash.vy = DASH_JUMP_V; Dash.grounded = false; Audio2.tone(420, 0.1, 'triangle', 0.1); }
 }
 function doDashBurst(){
   if(Dash.dashCd <= 0 && !Dash.dashing){
@@ -1345,11 +1407,61 @@ function startCurrent(){
 }
 
 /* ============================================================
+ * 11b. 松鼠冲刺的触屏按钮
+ * ========================================================== */
+var TouchBtn = {
+  jump:  { x:118,     y:442, r:56 },
+  burst: { x:W - 118, y:442, r:56 }
+};
+/* 冲刺热区比按钮本身大得多：孩子手指不一定戳得准，
+   点右边一整片都算冲刺；其他地方一律算跳（点空白默认跳）。 */
+function burstZone(){ return { x: W * 0.60, y: 300, w: W * 0.40, h: H - 300 }; }
+
+function drawTouchBtns(){
+  if(Game.gameId !== 'dash' || !Input.touch) return;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+
+  /* 左下：跳 */
+  var j = TouchBtn.jump;
+  ctx.globalAlpha = 0.9;
+  /* 草地本身亮度 ~180，按钮要用深色调 + 白圈白字才看得清；
+     半透明白叠在草地上实测只差 8 个亮度单位，孩子会以为那是块草地 */
+  ctx.fillStyle = 'rgba(47,122,70,.78)';
+  ctx.beginPath(); ctx.arc(j.x, j.y, j.r, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(j.x, j.y, j.r, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '500 30px system-ui,sans-serif';
+  ctx.fillText('跳', j.x, j.y + 2);
+
+  /* 右下：冲刺 + 冷却进度环 */
+  var b = TouchBtn.burst;
+  var cd = DASH_CFG[Game.diff].cd;
+  var ready = Dash.dashCd <= 0 && !Dash.dashing;
+  var pct = Dash.dashing ? 1 : (ready ? 1 : 1 - Dash.dashCd / cd);
+  ctx.globalAlpha = 0.9;
+  /* 就绪=深琥珀，冷却中=灰，两态亮度差足够大，一眼看出能不能按 */
+  ctx.fillStyle = ready ? 'rgba(194,106,18,.85)' : 'rgba(120,130,124,.62)';
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r + 8, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = ready ? '#f2b93c' : '#9aa8a0'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(pct, 0, 1));
+  ctx.stroke();
+  ctx.fillStyle = ready ? '#ffffff' : 'rgba(255,255,255,.72)';
+  ctx.font = '500 30px system-ui,sans-serif';
+  ctx.fillText('冲', b.x, b.y + 2);
+}
+
+/* ============================================================
  * 12. 开场提示横幅
  * ========================================================== */
 function bannerText(){
   if(Game.gameId === 'acorn') return '← → 或手指拖动，移动涂涂接橡果';
-  if(Game.gameId === 'dash') return '上半屏 / ↑ 跳过木头  ·  下半屏 / D 冲刺撞碎（+10 分）';
+  if(Game.gameId === 'dash') return '↑ / 左下「跳」过木头   ·   D / 右下「冲刺」撞碎（+10 分）';
   return '点开两张，一样的动物就配对成功';
 }
 function drawBanner(){
@@ -1404,7 +1516,10 @@ window.__fsm = {
   startCurrent:startCurrent, endGame:endGame,
   cardRect:cardRect, diffRect:diffRect, musicRect:musicRect, linkRect:linkRect,
   againRect:againRect, homeRect:homeRect, memRect:memRect,
-  openRunner:openRunner
+  openRunner:openRunner,
+  TouchBtn:TouchBtn, burstZone:burstZone,
+  /* 手动步进：给诊断脚本用，可以脱离 rAF 快进验证帧率不变性 */
+  _step:{ acorn:updateAcorn, dash:updateDash, memory:updateMemory }
 };
 
 resize();

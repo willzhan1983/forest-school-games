@@ -1,0 +1,285 @@
+
+/* ============================================================
+ * 4. 角色立绘（base64 内联，带程序化兜底）
+ * ========================================================== */
+var CAT_IMG = new Image(); CAT_IMG.src = 'data:image/png;base64,__CAT_B64__';
+var OWL_IMG = new Image(); OWL_IMG.src = 'data:image/png;base64,__OWL_B64__';
+
+function drawCharImg(img, x, y, w, h){
+  if(img && img.complete && img.naturalWidth > 0){
+    ctx.drawImage(img, x, y, w, h);
+    return true;
+  }
+  return false;
+}
+/* 兜底：图没加载出来时用程序化画一个，保证永远不空白 */
+function drawFallbackCat(x, y, w, h){
+  ctx.save();
+  ctx.fillStyle = '#e9e9ef';
+  ctx.beginPath(); ctx.ellipse(x + w/2, y + h*0.55, w*0.30, h*0.26, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(x + w*0.24, y + h*0.40); ctx.lineTo(x + w*0.32, y + h*0.20);
+  ctx.lineTo(x + w*0.42, y + h*0.38); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(x + w*0.76, y + h*0.40); ctx.lineTo(x + w*0.68, y + h*0.20);
+  ctx.lineTo(x + w*0.58, y + h*0.38); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#5ec2f0';
+  ctx.beginPath(); ctx.ellipse(x + w*0.41, y + h*0.52, w*0.05, h*0.06, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + w*0.59, y + h*0.52, w*0.05, h*0.06, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#f2909f';
+  ctx.beginPath(); ctx.moveTo(x + w*0.47, y + h*0.62); ctx.lineTo(x + w*0.53, y + h*0.62);
+  ctx.lineTo(x + w*0.50, y + h*0.66); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function drawFallbackOwl(x, y, w, h){
+  ctx.save();
+  ctx.fillStyle = '#ffd45e';
+  ctx.beginPath(); ctx.ellipse(x + w/2, y + h*0.52, w*0.28, h*0.28, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#7fc96a';
+  ctx.beginPath(); ctx.ellipse(x + w*0.26, y + h*0.55, w*0.11, h*0.20, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + w*0.74, y + h*0.55, w*0.11, h*0.20, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.ellipse(x + w*0.41, y + h*0.48, w*0.08, h*0.09, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + w*0.59, y + h*0.48, w*0.08, h*0.09, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#2f2a26';
+  ctx.beginPath(); ctx.ellipse(x + w*0.41, y + h*0.49, w*0.035, h*0.04, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + w*0.59, y + h*0.49, w*0.035, h*0.04, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#ff9a4d';
+  ctx.beginPath(); ctx.moveTo(x + w*0.47, y + h*0.56); ctx.lineTo(x + w*0.53, y + h*0.56);
+  ctx.lineTo(x + w*0.50, y + h*0.63); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function drawCat(x, y, w, h){
+  if(!drawCharImg(CAT_IMG, x, y, w, h)) drawFallbackCat(x, y, w, h);
+}
+function drawOwl(x, y, w, h){
+  if(!drawCharImg(OWL_IMG, x, y, w, h)) drawFallbackOwl(x, y, w, h);
+}
+
+/* ============================================================
+ * 5. 游戏清单 + 难度配置
+ * ========================================================== */
+var GAMES = [
+  { id:'acorn',  name:'接 橡 果', who:'owl', desc:'涂涂滑翔接橡果',
+    tip:'左右移动接住掉落的橡果，连击有加成' },
+  { id:'dash',   name:'松 鼠 冲 刺', who:'cat', desc:'钱钱冲刺撞开路',
+    tip:'冲刺撞碎木头得分，跳过去只是保命' },
+  { id:'memory', name:'记 忆 翻 牌', who:'both', desc:'找出一样的动物',
+    tip:'翻开两张，一样的就配对成功' }
+];
+
+var DIFFS = [
+  { id:'easy',   name:'简 单', color:'#4caf6d', dark:'#2f7a46' },
+  { id:'normal', name:'普 通', color:'#4a90d9', dark:'#2b6bb0' },
+  { id:'hard',   name:'困 难', color:'#f28c28', dark:'#c26a12' }
+];
+
+var Game = {
+  state:'menu',          /* menu / play / result */
+  gameId:'acorn',
+  diff:'easy',
+  score:0,
+  time:0,
+  best:{},               /* 键形如 'acorn_hard'，见 bestKey() */
+  banner:0,
+  flash:0
+};
+
+/* 最高分按「游戏 × 难度」分开存。
+   旧版三档共用一个 fsm_best_<game>：接橡果 easy 档橡果落得慢（vy 2.1）几乎打不死，
+   随手刷个 800 分之后，normal / hard 就再也打不出「新纪录」了 ——
+   孩子唯一的长期激励直接失效。 */
+function bestKey(id, diff){ return id + '_' + (diff || Game.diff); }
+
+function loadBest(){
+  try{
+    var d = localStorage.getItem('fsm_diff');
+    if(d && DIFFS.some(function(x){ return x.id === d; })) Game.diff = d;
+    ['acorn','dash','memory'].forEach(function(k){
+      var hasNew = false;
+      DIFFS.forEach(function(dd){
+        var raw = localStorage.getItem('fsm_best_' + k + '_' + dd.id);
+        var v = parseInt(raw || '0', 10);
+        Game.best[bestKey(k, dd.id)] = isNaN(v) ? 0 : v;
+        if(raw !== null) hasNew = true;
+      });
+      /* 迁移：旧存档只有一个 fsm_best_<game>。只有在没有任何按难度的新键时，
+         才把旧值搬给当前难度，避免孩子的纪录被清零；只搬当前一档，
+         防止把 easy 刷出来的高分污染 normal / hard（那正是要修的 bug）。 */
+      if(!hasNew){
+        var old = parseInt(localStorage.getItem('fsm_best_' + k) || '0', 10);
+        if(!isNaN(old) && old > 0){
+          Game.best[bestKey(k, Game.diff)] = old;
+          localStorage.setItem('fsm_best_' + bestKey(k, Game.diff), String(old));
+        }
+      }
+    });
+  }catch(e){}
+}
+loadBest();
+
+function saveBest(id, score){
+  var key = bestKey(id);
+  if(score > (Game.best[key] || 0)){
+    Game.best[key] = score;
+    try{ localStorage.setItem('fsm_best_' + key, String(score)); }catch(e){}
+    return true;
+  }
+  return false;
+}
+
+/* ============================================================
+ * 6. 菜单布局与绘制
+ * ========================================================== */
+var CARD_W = 250, CARD_H = 230, CARD_Y = 118, CARD_GAP = 45;
+var CARD_X0 = (W - (CARD_W * 3 + CARD_GAP * 2)) / 2;
+function cardRect(i){ return { x: CARD_X0 + i * (CARD_W + CARD_GAP), y: CARD_Y, w: CARD_W, h: CARD_H }; }
+
+var DIFF_W = 170, DIFF_H = 56, DIFF_Y = 372, DIFF_GAP = 30;
+var DIFF_X0 = (W - (DIFF_W * 3 + DIFF_GAP * 2)) / 2;
+function diffRect(i){ return { x: DIFF_X0 + i * (DIFF_W + DIFF_GAP), y: DIFF_Y, w: DIFF_W, h: DIFF_H }; }
+
+function musicRect(){ return { x:14, y:14, w:56, h:56 }; }
+function linkRect(){ return { x:850, y:14, w:96, h:44 }; }
+
+function drawMusicBtn(r){
+  var on = Audio2.musicOn;
+  /* 底色就是状态：开=实心绿，关=半透明灰。
+     之前只靠"音符淡一点 + 一条细斜杠"区分，实测两态亮度只差 0.8，
+     小朋友根本看不出来。改成整块换底色，一眼分辨。 */
+  ctx.fillStyle = on ? 'rgba(76,175,109,.95)' : 'rgba(255,255,255,.22)';
+  roundRect(r.x, r.y, r.w, r.h, 12); ctx.fill();
+  ctx.strokeStyle = on ? '#2f7a46' : 'rgba(255,255,255,.6)';
+  ctx.lineWidth = 2;
+  roundRect(r.x, r.y, r.w, r.h, 12); ctx.stroke();
+
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if(on){
+    /* 音符 + 两道声波（表示正在响） */
+    ctx.beginPath();
+    ctx.ellipse(r.x + 23, r.y + 35, 5.5, 4, -0.4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(r.x + 27, r.y + 35); ctx.lineTo(r.x + 27, r.y + 19);
+    ctx.moveTo(r.x + 27, r.y + 19); ctx.lineTo(r.x + 35, r.y + 23);
+    ctx.stroke();
+    ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.arc(r.x + 37, r.y + 31, 5, -1.0, 1.0); ctx.stroke();
+    ctx.beginPath(); ctx.arc(r.x + 37, r.y + 31, 10, -1.0, 1.0); ctx.stroke();
+  }else{
+    /* 灰化音符 + 醒目红斜杠 */
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    ctx.ellipse(r.x + 26, r.y + 34, 6, 4, -0.4, 0, Math.PI * 2); ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(r.x + 30, r.y + 34); ctx.lineTo(r.x + 30, r.y + 18);
+    ctx.moveTo(r.x + 30, r.y + 18); ctx.lineTo(r.x + 38, r.y + 22);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = '#ff6b6b'; ctx.lineWidth = 4.5;
+    ctx.beginPath();
+    ctx.moveTo(r.x + 16, r.y + 18); ctx.lineTo(r.x + 44, r.y + 46);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawLinkBtn(r){
+  /* 菜单页右上角：跳转回跑酷篇 */
+  ctx.fillStyle = 'rgba(74,144,217,.95)';
+  roundRect(r.x, r.y, r.w, r.h, 10); ctx.fill();
+  ctx.strokeStyle = '#2b6bb0'; ctx.lineWidth = 2;
+  roundRect(r.x, r.y, r.w, r.h, 10); ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = '500 15px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.fillText('放学跑酷', r.x + r.w / 2, r.y + r.h / 2 + 1);
+}
+
+function drawMenu(){
+  drawBackdrop(Game.time * 60, 0);
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#1f4d2e';
+  ctx.font = '500 34px system-ui,sans-serif';
+  ctx.fillText('森林学校 · 课间十分钟', W / 2, 62);
+  ctx.fillStyle = 'rgba(31,77,46,.72)';
+  ctx.font = '400 15px system-ui,sans-serif';
+  ctx.fillText('选一个游戏，再选个难度', W / 2, 92);
+
+  for(var i = 0; i < GAMES.length; i++){
+    var g = GAMES[i], r = cardRect(i);
+    var sel = (Game.gameId === g.id);
+    ctx.fillStyle = sel ? 'rgba(255,255,255,.94)' : 'rgba(255,255,255,.78)';
+    roundRect(r.x, r.y, r.w, r.h, 16); ctx.fill();
+    ctx.strokeStyle = sel ? '#4caf6d' : 'rgba(60,80,70,.28)';
+    ctx.lineWidth = sel ? 3.5 : 1.5;
+    roundRect(r.x, r.y, r.w, r.h, 16); ctx.stroke();
+
+    /* 角色形象 */
+    var cx = r.x + r.w / 2;
+    if(g.who === 'owl'){
+      drawOwl(cx - 52, r.y + 18, 104, 105);
+    }else if(g.who === 'cat'){
+      drawCat(cx - 52, r.y + 18, 104, 105);
+    }else{
+      drawCat(cx - 88, r.y + 22, 84, 96);
+      drawOwl(cx + 4, r.y + 22, 84, 96);
+    }
+
+    ctx.fillStyle = '#20402c';
+    ctx.font = '500 23px system-ui,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(g.name, cx, r.y + 148);
+
+    ctx.fillStyle = 'rgba(32,64,44,.66)';
+    ctx.font = '400 13px system-ui,sans-serif';
+    ctx.fillText(g.desc, cx, r.y + 172);
+
+    ctx.fillStyle = '#8a6d3b';
+    ctx.font = '500 14px system-ui,sans-serif';
+    /* 显示当前所选难度的最高分，切难度时跟着变 */
+    ctx.fillText('最高分 ' + (Game.best[bestKey(g.id)] || 0), cx, r.y + 200);
+
+    if(sel){
+      ctx.fillStyle = 'rgba(76,175,109,.16)';
+      roundRect(r.x + 8, r.y + 206, r.w - 16, 18, 9); ctx.fill();
+      ctx.fillStyle = '#2f7a46';
+      ctx.font = '400 11px system-ui,sans-serif';
+      ctx.fillText(g.tip, cx, r.y + 219);
+    }
+  }
+
+  /* 难度 */
+  ctx.fillStyle = 'rgba(31,77,46,.8)';
+  ctx.font = '400 14px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('难度', W / 2, DIFF_Y - 12);
+  for(var d = 0; d < DIFFS.length; d++){
+    var dd = DIFFS[d], dr = diffRect(d);
+    var on = (Game.diff === dd.id);
+    ctx.globalAlpha = on ? 1 : 0.55;
+    ctx.fillStyle = on ? dd.color : 'rgba(255,255,255,.75)';
+    roundRect(dr.x, dr.y, dr.w, dr.h, 12); ctx.fill();
+    ctx.strokeStyle = on ? dd.dark : 'rgba(60,80,70,.3)';
+    ctx.lineWidth = on ? 2.5 : 1.5;
+    roundRect(dr.x, dr.y, dr.w, dr.h, 12); ctx.stroke();
+    ctx.fillStyle = on ? '#ffffff' : '#33513f';
+    ctx.font = '500 20px system-ui,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+    ctx.fillText(dd.name, dr.x + dr.w / 2, dr.y + dr.h / 2 + 1);
+    ctx.globalAlpha = 1;
+  }
+
+  drawMusicBtn(musicRect());
+  drawLinkBtn(linkRect());
+
+  ctx.fillStyle = 'rgba(31,77,46,.6)';
+  ctx.font = '400 13px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('键盘：← → 移动 · 空格 确认 / 动作 · 1 2 3 选游戏 · Esc 返回', W / 2, H - 34);
+  ctx.fillText('触屏：点卡片选游戏，点难度，游戏中按屏幕提示操作', W / 2, H - 14);
+}
+
+function openRunner(){
+  try{ window.open('https://willzhan1983.github.io/forest-school-runner/', '_blank'); }catch(e){}
+}
