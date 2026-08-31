@@ -1378,7 +1378,7 @@ function loop(ts){
   var dtF = dtSec * 60;
 
   if(Game.state === 'play'){
-    if(Game.banner > 0) Game.banner -= dtF;
+    if(Game.banner > 0) Game.banner = Math.max(0, Game.banner - dtF);
     if(Game.gameId === 'acorn') updateAcorn(dtF);
     else if(Game.gameId === 'dash') updateDash(dtF);
     else if(Game.gameId === 'memory') updateMemory(dtF);
