@@ -57,12 +57,15 @@ function drawOwl(x, y, w, h){
 /* ============================================================
  * 5. 游戏清单 + 难度配置
  * ========================================================== */
+/* mode 决定菜单下半部分显示哪个选择器：
+   'level' = 三档难度（简单/普通/困难）
+   'grid'  = 棋盘尺寸（翻牌没有难度概念，牌多就难，所以直接给尺寸选） */
 var GAMES = [
-  { id:'acorn',  name:'接 橡 果', who:'owl', desc:'涂涂滑翔接橡果',
+  /* drag:true 表示这个游戏靠手指拖动操作，pointermove 才会跟手；
+     翻牌不设，手指划过屏幕会误翻一排骨牌。 */
+  { id:'acorn',  name:'接 橡 果', who:'owl', mode:'level', drag:true, desc:'涂涂滑翔接橡果',
     tip:'左右移动接住掉落的橡果，连击有加成' },
-  { id:'dash',   name:'松 鼠 冲 刺', who:'cat', desc:'钱钱冲刺撞开路',
-    tip:'冲刺撞碎木头得分，跳过去只是保命' },
-  { id:'memory', name:'记 忆 翻 牌', who:'both', desc:'找出一样的动物',
+  { id:'memory', name:'记 忆 翻 牌', who:'both', mode:'grid', desc:'找出一样的动物',
     tip:'翻开两张，一样的就配对成功' }
 ];
 
@@ -72,48 +75,99 @@ var DIFFS = [
   { id:'hard',   name:'困 难', color:'#f28c28', dark:'#c26a12' }
 ];
 
+/* 翻牌的棋盘尺寸。cols × rows 必须是偶数才能两两配对，
+   所以只给 4×3(12张) / 4×4(16张) / 5×4(20张) / 6×4(24张) 这四档。
+   base 是计分基数：牌越多越费时，基分给高一点，四档之间才有可比性。 */
+var GRIDS = [
+  { id:'g43', name:'4 × 3', cols:4, rows:3, base:1000, color:'#4caf6d', dark:'#2f7a46' },
+  { id:'g44', name:'4 × 4', cols:4, rows:4, base:1200, color:'#4a90d9', dark:'#2b6bb0' },
+  { id:'g54', name:'5 × 4', cols:5, rows:4, base:1500, color:'#9b6bd6', dark:'#7644ad' },
+  { id:'g64', name:'6 × 4', cols:6, rows:4, base:1800, color:'#f28c28', dark:'#c26a12' }
+];
+
+/* 当前游戏该用哪个选择器 */
+function optsList(g){ return (g && g.mode === 'grid') ? GRIDS : DIFFS; }
+
 var Game = {
   state:'menu',          /* menu / play / result */
   gameId:'acorn',
-  diff:'easy',
+  diff:'easy',           /* 当前游戏的当前档位，是 diffs 的镜像，游戏逻辑都读它 */
+  diffs:{},              /* 每个游戏各记各的：{ acorn:'easy', memory:'g44' } */
   score:0,
   time:0,
-  best:{},               /* 键形如 'acorn_hard'，见 bestKey() */
+  best:{},               /* 键形如 'acorn_hard' / 'memory_g44'，见 bestKey() */
   banner:0,
   flash:0
 };
 
-/* 最高分按「游戏 × 难度」分开存。
+/* 最高分按「游戏 × 难度/尺寸」分开存。
    旧版三档共用一个 fsm_best_<game>：接橡果 easy 档橡果落得慢（vy 2.1）几乎打不死，
    随手刷个 800 分之后，normal / hard 就再也打不出「新纪录」了 ——
    孩子唯一的长期激励直接失效。 */
 function bestKey(id, diff){ return id + '_' + (diff || Game.diff); }
 
+/* 难度/尺寸按游戏分开存：翻牌存的是 'g44' 这种尺寸 id，
+   接橡果存 'easy'。共用一把钥匙的话，在翻牌里选完 6×4 再切到接橡果，
+   ACORN_CFG['g64'] 会是 undefined，一进游戏就崩。 */
+function loadDiff(){
+  try{
+    GAMES.forEach(function(g){
+      var d = localStorage.getItem('fsm_diff_' + g.id);
+      Game.diffs[g.id] = d || optsList(g)[0].id;
+    });
+  }catch(e){}
+  normalizeDiff();
+}
+/* 兜底：存档里的值若不在当前游戏的选择器里（游戏被删过、选项表改过、
+   或旧版本留下的脏值），回退到第一项 —— 否则配置表会查出 undefined 直接崩。 */
+function normalizeDiff(){
+  var list = optsList(curGame());
+  var cur = Game.diffs[Game.gameId];
+  var ok = false;
+  for(var i = 0; i < list.length; i++) if(list[i].id === cur) ok = true;
+  if(!ok) cur = list[0].id;
+  Game.diffs[Game.gameId] = cur;
+  Game.diff = cur;
+}
+function saveDiff(){
+  try{ localStorage.setItem('fsm_diff_' + Game.gameId, Game.diff); }catch(e){}
+}
+/* 切游戏 / 切档位都走这两个函数，保证 diffs 和 diff 始终同步 */
+function selectGame(id){
+  Game.gameId = id;
+  normalizeDiff();
+}
+function selectDiff(did){
+  Game.diff = did;
+  Game.diffs[Game.gameId] = did;
+  saveDiff();
+}
+
 function loadBest(){
   try{
-    var d = localStorage.getItem('fsm_diff');
-    if(d && DIFFS.some(function(x){ return x.id === d; })) Game.diff = d;
-    ['acorn','dash','memory'].forEach(function(k){
+    GAMES.forEach(function(g){
+      var list = optsList(g);
       var hasNew = false;
-      DIFFS.forEach(function(dd){
-        var raw = localStorage.getItem('fsm_best_' + k + '_' + dd.id);
+      list.forEach(function(o){
+        var raw = localStorage.getItem('fsm_best_' + g.id + '_' + o.id);
         var v = parseInt(raw || '0', 10);
-        Game.best[bestKey(k, dd.id)] = isNaN(v) ? 0 : v;
+        Game.best[bestKey(g.id, o.id)] = isNaN(v) ? 0 : v;
         if(raw !== null) hasNew = true;
       });
-      /* 迁移：旧存档只有一个 fsm_best_<game>。只有在没有任何按难度的新键时，
-         才把旧值搬给当前难度，避免孩子的纪录被清零；只搬当前一档，
-         防止把 easy 刷出来的高分污染 normal / hard（那正是要修的 bug）。 */
+      /* 迁移：旧存档只有一个 fsm_best_<game>。只有在没有任何按档位的新键时，
+         才把旧值搬给当前档位，避免孩子的纪录被清零；只搬当前一档，
+         防止把简单档刷出来的高分污染其他档（那正是要修的 bug）。 */
       if(!hasNew){
-        var old = parseInt(localStorage.getItem('fsm_best_' + k) || '0', 10);
+        var old = parseInt(localStorage.getItem('fsm_best_' + g.id) || '0', 10);
         if(!isNaN(old) && old > 0){
-          Game.best[bestKey(k, Game.diff)] = old;
-          localStorage.setItem('fsm_best_' + bestKey(k, Game.diff), String(old));
+          Game.best[bestKey(g.id, Game.diff)] = old;
+          localStorage.setItem('fsm_best_' + bestKey(g.id, Game.diff), String(old));
         }
       }
     });
   }catch(e){}
 }
+loadDiff();
 loadBest();
 
 function saveBest(id, score){
@@ -129,13 +183,33 @@ function saveBest(id, score){
 /* ============================================================
  * 6. 菜单布局与绘制
  * ========================================================== */
-var CARD_W = 250, CARD_H = 230, CARD_Y = 118, CARD_GAP = 45;
-var CARD_X0 = (W - (CARD_W * 3 + CARD_GAP * 2)) / 2;
-function cardRect(i){ return { x: CARD_X0 + i * (CARD_W + CARD_GAP), y: CARD_Y, w: CARD_W, h: CARD_H }; }
+/* 卡片和按钮都按数量自适应宽度，加/减游戏或档位时不用重算坐标。
+   卡片内容按 CARD_REF_W 等比缩放，避免变窄后溢出或字号缩到看不清。 */
+var CARD_H = 230, CARD_Y = 118, CARD_MARGIN = 26;
+var CARD_REF_W = 250;
+function cardMetrics(){
+  var n = GAMES.length;
+  var gap = n >= 4 ? 22 : 45;
+  var w = Math.min(CARD_REF_W, Math.floor((W - CARD_MARGIN * 2 - gap * (n - 1)) / n));
+  return { w:w, gap:gap, x0:(W - (w * n + gap * (n - 1))) / 2 };
+}
+function cardRect(i){
+  var m = cardMetrics();
+  return { x: m.x0 + i * (m.w + m.gap), y: CARD_Y, w: m.w, h: CARD_H };
+}
 
-var DIFF_W = 170, DIFF_H = 56, DIFF_Y = 372, DIFF_GAP = 30;
-var DIFF_X0 = (W - (DIFF_W * 3 + DIFF_GAP * 2)) / 2;
-function diffRect(i){ return { x: DIFF_X0 + i * (DIFF_W + DIFF_GAP), y: DIFF_Y, w: DIFF_W, h: DIFF_H }; }
+/* 档位按钮：三档难度时 170 宽，翻牌的四个尺寸选项窄一点才放得下 */
+var DIFF_H = 56, DIFF_Y = 372, DIFF_MARGIN = 30;
+function diffMetrics(){
+  var n = optsList(curGame()).length;
+  var gap = n >= 4 ? 18 : 30;
+  var w = Math.min(170, Math.floor((W - DIFF_MARGIN * 2 - gap * (n - 1)) / n));
+  return { w:w, gap:gap, x0:(W - (w * n + gap * (n - 1))) / 2 };
+}
+function diffRect(i){
+  var m = diffMetrics();
+  return { x: m.x0 + i * (m.w + m.gap), y: DIFF_Y, w: m.w, h: DIFF_H };
+}
 
 function musicRect(){ return { x:14, y:14, w:56, h:56 }; }
 function linkRect(){ return { x:850, y:14, w:96, h:44 }; }
@@ -195,6 +269,10 @@ function drawLinkBtn(r){
   ctx.fillText('放学跑酷', r.x + r.w / 2, r.y + r.h / 2 + 1);
 }
 
+/* 卡片字号：按缩放比缩小，但不低于 min —— 加游戏后卡片变窄，
+   纯等比缩放会把提示文字压到 7px 那种根本读不了的大小。 */
+function cardFont(base, min, sc){ return Math.max(min, Math.round(base * sc)); }
+
 function drawMenu(){
   drawBackdrop(Game.time * 60, 0);
 
@@ -204,7 +282,7 @@ function drawMenu(){
   ctx.fillText('森林学校 · 课间十分钟', W / 2, 62);
   ctx.fillStyle = 'rgba(31,77,46,.72)';
   ctx.font = '400 15px system-ui,sans-serif';
-  ctx.fillText('选一个游戏，再选个难度', W / 2, 92);
+  ctx.fillText(curGame().mode === 'grid' ? '选一个游戏，再挑棋盘多大' : '选一个游戏，再选个难度', W / 2, 92);
 
   for(var i = 0; i < GAMES.length; i++){
     var g = GAMES[i], r = cardRect(i);
@@ -215,47 +293,50 @@ function drawMenu(){
     ctx.lineWidth = sel ? 3.5 : 1.5;
     roundRect(r.x, r.y, r.w, r.h, 16); ctx.stroke();
 
-    /* 角色形象 */
+    /* 角色形象。卡片变窄时内容等比缩小，字号设下限保证还能读 */
     var cx = r.x + r.w / 2;
+    var sc = r.w / CARD_REF_W;
     if(g.who === 'owl'){
-      drawOwl(cx - 52, r.y + 18, 104, 105);
+      drawOwl(cx - 52 * sc, r.y + 18, 104 * sc, 105 * sc);
     }else if(g.who === 'cat'){
-      drawCat(cx - 52, r.y + 18, 104, 105);
+      drawCat(cx - 52 * sc, r.y + 18, 104 * sc, 105 * sc);
     }else{
-      drawCat(cx - 88, r.y + 22, 84, 96);
-      drawOwl(cx + 4, r.y + 22, 84, 96);
+      drawCat(cx - 88 * sc, r.y + 22, 84 * sc, 96 * sc);
+      drawOwl(cx + 4 * sc, r.y + 22, 84 * sc, 96 * sc);
     }
 
     ctx.fillStyle = '#20402c';
-    ctx.font = '500 23px system-ui,sans-serif';
+    ctx.font = '500 ' + cardFont(23, 17, sc) + 'px system-ui,sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
     ctx.fillText(g.name, cx, r.y + 148);
 
     ctx.fillStyle = 'rgba(32,64,44,.66)';
-    ctx.font = '400 13px system-ui,sans-serif';
+    ctx.font = '400 ' + cardFont(13, 11, sc) + 'px system-ui,sans-serif';
     ctx.fillText(g.desc, cx, r.y + 172);
 
     ctx.fillStyle = '#8a6d3b';
-    ctx.font = '500 14px system-ui,sans-serif';
-    /* 显示当前所选难度的最高分，切难度时跟着变 */
-    ctx.fillText('最高分 ' + (Game.best[bestKey(g.id)] || 0), cx, r.y + 200);
+    ctx.font = '500 ' + cardFont(14, 11, sc) + 'px system-ui,sans-serif';
+    /* 用这个游戏自己的档位去查最高分。之前直接拿全局 Game.diff，
+       切到翻牌时它还是 'easy'，而翻牌的键是 'memory_g43' 这种，永远查不到、显示 0。 */
+    ctx.fillText('最高分 ' + (Game.best[bestKey(g.id, Game.diffs[g.id])] || 0), cx, r.y + 200);
 
     if(sel){
       ctx.fillStyle = 'rgba(76,175,109,.16)';
       roundRect(r.x + 8, r.y + 206, r.w - 16, 18, 9); ctx.fill();
       ctx.fillStyle = '#2f7a46';
-      ctx.font = '400 11px system-ui,sans-serif';
+      ctx.font = '400 ' + cardFont(11, 10, sc) + 'px system-ui,sans-serif';
       ctx.fillText(g.tip, cx, r.y + 219);
     }
   }
 
-  /* 难度 */
+  /* 档位选择器：接橡果是三档难度，翻牌是棋盘尺寸（牌多就难，所以直接选几×几） */
+  var opts = optsList(curGame());
   ctx.fillStyle = 'rgba(31,77,46,.8)';
   ctx.font = '400 14px system-ui,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-  ctx.fillText('难度', W / 2, DIFF_Y - 12);
-  for(var d = 0; d < DIFFS.length; d++){
-    var dd = DIFFS[d], dr = diffRect(d);
+  ctx.fillText(curGame().mode === 'grid' ? '棋盘' : '难度', W / 2, DIFF_Y - 12);
+  for(var d = 0; d < opts.length; d++){
+    var dd = opts[d], dr = diffRect(d);
     var on = (Game.diff === dd.id);
     ctx.globalAlpha = on ? 1 : 0.55;
     ctx.fillStyle = on ? dd.color : 'rgba(255,255,255,.75)';
@@ -276,8 +357,11 @@ function drawMenu(){
   ctx.fillStyle = 'rgba(31,77,46,.6)';
   ctx.font = '400 13px system-ui,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-  ctx.fillText('键盘：← → 移动 · 空格 确认 / 动作 · 1 2 3 选游戏 · Esc 返回', W / 2, H - 34);
-  ctx.fillText('触屏：点卡片选游戏，点难度，游戏中按屏幕提示操作', W / 2, H - 14);
+  /* 数字键提示跟着游戏数量走，别再写死「1 2 3」 */
+  var nums = GAMES.map(function(_, i){ return String(i + 1); }).join(' ');
+  var grid = curGame().mode === 'grid';
+  ctx.fillText('键盘：← → 选择 · 空格 确认 / 动作 · ' + nums + ' 选游戏 · Esc 返回', W / 2, H - 34);
+  ctx.fillText('触屏：点卡片选游戏，点' + (grid ? '棋盘' : '难度') + '，游戏中按屏幕提示操作', W / 2, H - 14);
 }
 
 function openRunner(){

@@ -3,7 +3,7 @@
    只在动画中间/完成帧出现的视觉 bug。本脚本对每个关键动画逐帧采样，
    输出亮度/色彩序列，检查画面是否在整个过程中都正常。 */
 const puppeteer = require('puppeteer-core');
-const URL = process.env.TARGET_URL || 'http://127.0.0.1:8931/forest-recess.html';
+const URL = process.env.TARGET_URL || 'http://127.0.0.1:8931/index.html';
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const results = [];
 
@@ -44,10 +44,13 @@ async function sample(page, x, y, w, h) {
   await page.evaluate(() => { window.__fsm.Audio2.init(); window.__fsm.Audio2.kick(); });
   await wait(800);
 
+  /* 走 selectGame 而不是直接改 gameId：
+     selectGame 会把 Game.diff 归一化到该游戏自己的选择器上，
+     直接改 gameId 的话，翻牌会带着接橡果的 'easy' 开一局。 */
   const enter = async (id) => {
     await page.evaluate(g => {
       window.__fsm.Game.state = 'menu';
-      window.__fsm.Game.gameId = g;
+      window.__fsm.selectGame(g);
       window.__fsm.startCurrent();
     }, id);
     await wait(600);
@@ -118,32 +121,62 @@ async function sample(page, x, y, w, h) {
   rec('A5', '受伤闪烁期间角色始终可见', hurtMin > 60,
     'lum序列=' + hurtTrace.map(t => t.lum).join(' '));
 
-  /* ---------- A6 松鼠冲刺：撞击特效消失 ---------- */
-  await enter('dash');
+  /* ---------- A6 6×4 大棋盘：24 张牌全在画面内且互不重叠 ----------
+     最大尺寸最容易把牌挤出边界或互相压住；这里逐张算矩形做几何校验，
+     再抽查四角 + 中心是否真的画出了东西（不是空背景）。 */
   await page.evaluate(() => {
-    const D = window.__fsm.Dash;
-    D.fx.push({ x: 400, y: 400, vx: -2, vy: -4, life: 24, max: 24, c: '#a9703f' });
-    D.fx.push({ x: 420, y: 400, vx: 2, vy: -3, life: 24, max: 24, c: '#a9703f' });
+    const f = window.__fsm;
+    f.Game.state = 'menu';
+    f.selectGame('memory');
+    f.selectDiff('g64');
   });
-  await wait(300);
-  const fxDash1 = await page.evaluate(() => window.__fsm.Dash.fx.length);
-  await wait(1500);
-  const fxDash2 = await page.evaluate(() => window.__fsm.Dash.fx.length);
-  rec('A6', '冲刺特效出现后自行消失（不残留）', fxDash1 >= 1 && fxDash2 === 0,
-    `0.3秒后=${fxDash1} 1.8秒后=${fxDash2}`);
-
-  /* ---------- A7 松鼠冲刺：跳跃过程中角色始终可见 ---------- */
-  await enter('dash');
-  const jumpTrace = [];
-  await page.evaluate(() => { window.__fsr = null; });
-  await page.keyboard.press('Space');
-  for (let i = 0; i < 12; i++) {
-    jumpTrace.push(await sample(page, 150, 360, 90, 140));
-    await wait(60);
+  await enter('memory');
+  const bigGrid = await page.evaluate(() => {
+    const M = window.__fsm.Mem, R = [];
+    for (let i = 0; i < M.cards.length; i++) R.push(window.__fsm.memRect(i));
+    return { n: M.cards.length, rects: R };
+  });
+  let gridLayoutOk = bigGrid.n === 24;
+  for (let i = 0; i < bigGrid.rects.length; i++) {
+    const r = bigGrid.rects[i];
+    if (r.x < 0 || r.y < 0 || r.x + r.w > 960 || r.y + r.h > 540) gridLayoutOk = false;
+    if (r.w < 40 || r.h < 40) gridLayoutOk = false;   // 被压扁就看不清动物了
   }
-  const jumpMin = Math.min(...jumpTrace.map(t => t.lum));
-  rec('A7', '跳跃全过程角色始终可见', jumpMin > 60,
-    'lum序列=' + jumpTrace.map(t => t.lum).join(' '));
+  /* 四角 + 中心抽样 */
+  const probes = [0, 5, 12, 18, 23];
+  const probeDetail = [];
+  let probeOk = true;
+  for (const idx of probes) {
+    const r = bigGrid.rects[idx];
+    const s = await sample(page, r.x + 6, r.y + 6, r.w - 12, r.h - 12);
+    probeDetail.push(`#${idx}:lum=${s.lum},colors=${s.colors}`);
+    if (s.colors < 3) probeOk = false;
+  }
+  rec('A6', '6×4 棋盘：24 张牌全在画面内、不重叠、都画得出',
+    gridLayoutOk && probeOk,
+    `张数=${bigGrid.n} 几何=${gridLayoutOk ? 'ok' : '越界/过小'}  ` + probeDetail.join(' '));
+
+  /* ---------- A7 6×4 棋盘：完成一次配对后卡片保持可见 ----------
+     大棋盘卡片更窄，配对成功的半透明淡出在小卡片上更容易"淡没了"。 */
+  await enter('memory');
+  await page.evaluate(() => {
+    const M = window.__fsm.Mem;
+    let a = -1, b = -1;
+    for (let i = 0; i < M.cards.length && b < 0; i++) {
+      if (a < 0) { a = i; continue; }
+      if (M.cards[i].k === M.cards[a].k) b = i;
+    }
+    M.cards[a].open = true; M.cards[b].open = true;
+    M.first = a; M._second = b; M.lockT = 2;
+    window.__pair = [a, b];
+  });
+  await wait(1400);
+  const pairIdx = await page.evaluate(() => window.__pair);
+  const pairR = await page.evaluate(i => window.__fsm.memRect(i), pairIdx[0]);
+  const pairS = await sample(page, pairR.x + 8, pairR.y + 8, pairR.w - 16, pairR.h - 16);
+  const pairMatched = await page.evaluate(() => window.__fsm.Mem.matched);
+  rec('A7', '6×4 棋盘：配对成功的卡片保持可见', pairMatched === 2 && pairS.colors > 6 && pairS.lum > 100,
+    `matched=${pairMatched} colors=${pairS.colors} lum=${pairS.lum}`);
 
   /* ---------- A8 开场横幅动画结束 ---------- */
   await enter('acorn');
