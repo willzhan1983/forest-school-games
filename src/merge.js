@@ -31,6 +31,16 @@ function readB64(name) {
 const cat = readB64('cat.b64.txt');
 const owl = readB64('owl.b64.txt');
 
+/* 掉落道具。key 是 src 里的占位符，value 是素材文件。
+   加新道具：tools/mkitem.js 产一张图 → 这里加一行 → p2 的 ITEM_IMG/ITEM_AR 登记 key。 */
+const ITEMS = {
+  __ACORN_B64__: 'acorn.b64.txt',
+  __BUG_B64__: 'bug.b64.txt',
+  __SHROOM_B64__: 'shroom.b64.txt'
+};
+const itemB64 = {};
+for (const [ph, file] of Object.entries(ITEMS)) itemB64[ph] = readB64(file);
+
 /* 拼接顺序。p4 必须最后（含 IIFE 收尾 + 关闭标签）。 */
 const PARTS = ['p1', 'p2', 'p3', 'g-spot', 'p4'];
 
@@ -42,14 +52,19 @@ const parts = PARTS.map(function (n) {
 
 let html = parts.join('\n');
 
-if (html.indexOf('__CAT_B64__') < 0) throw new Error('占位符 __CAT_B64__ 不见了');
-if (html.indexOf('__OWL_B64__') < 0) throw new Error('占位符 __OWL_B64__ 不见了');
 html = html.replace('__CAT_B64__', cat).replace('__OWL_B64__', owl);
-
-if (html.indexOf('__CAT_B64__') >= 0 || html.indexOf('__OWL_B64__') >= 0) {
-  throw new Error('占位符替换后仍有残留');
+for (const [ph, b64] of Object.entries(itemB64)) {
+  if (html.indexOf(ph) < 0) throw new Error('占位符 ' + ph + ' 不见了');
+  html = html.replace(ph, b64);
 }
+
+/* 全量复查：任何一个占位符没被替掉，说明 src 和素材对不上，直接失败 */
+var left = html.match(/__[A-Z0-9]+_B64__/g);
+if (left) throw new Error('占位符替换后仍有残留: ' + left.join(','));
 
 fs.writeFileSync(OUT, html);
 console.log('written', path.relative(process.cwd(), OUT), html.length, 'chars');
 console.log('cat b64', cat.length, '| owl b64', owl.length);
+console.log('items', Object.keys(itemB64).map(function (k) {
+  return k.replace(/_B64__/, '') + '=' + itemB64[k].length;
+}).join(' '));

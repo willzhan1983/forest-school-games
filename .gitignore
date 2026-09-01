@@ -1,3 +1,9 @@
 src/_extracted.js
 node_modules/
 .DS_Store
+
+# AI 生成的原图（每张 0.5~0.8MB）。入库的是处理完的 raw-items/out/*.png
+# 和 src/*.b64.txt，原图留着只是为了重跑 tools/mkitem.js 时不用再生成。
+raw-items/*.png
+# 截图产物
+shots/

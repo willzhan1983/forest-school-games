@@ -5,6 +5,8 @@ const fs = require('fs');
 const URL = process.env.TARGET_URL || 'http://127.0.0.1:8931/index.html';
 const SRC = process.env.TARGET_SRC || path.resolve(__dirname, '..', 'index.html');
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+/* 基准逻辑画布尺寸。实际坐标会从 __fsm.W / __fsm.H 读，横屏 960×540、
+   竖屏 540×960。保留常量只是给不太关心 viewport 的旧代码用。 */
 const W = 960, H = 540;
 
 const results = [];
@@ -14,9 +16,12 @@ function rec(id, name, pass, detail) {
 }
 
 async function clickAt(page, lx, ly) {
+  /* 关键修复：之前硬编码 960/540，竖屏（540/960）下点击坐标算偏到屏外。
+     现在从 __fsm 读真实 W/H，无论横屏竖屏都对得上。 */
   const pt = await page.evaluate(([x, y]) => {
     const r = document.getElementById('game').getBoundingClientRect();
-    return { x: r.left + x * (r.width / 960), y: r.top + y * (r.height / 540) };
+    const W = window.__fsm.W, H = window.__fsm.H;
+    return { x: r.left + x * (r.width / W), y: r.top + y * (r.height / H) };
   }, [lx, ly]);
   await page.mouse.click(pt.x, pt.y);
 }
@@ -232,7 +237,7 @@ async function sample(page, x, y, w, h) {
   await page.evaluate(() => {
     const A = window.__fsm.Acorn;
     A.nuts.length = 0;
-    A.nuts.push({ x: A.owlX, y: 405, vy: 0.6, rot: 0, vr: 0, swing: 0 });
+    A.nuts.push({ x: A.owlX, y: 405, vy: 0.6, kind: 'acorn', rot: 0, vr: 0, swing: 0 });
   });
   await wait(500);
   const after10 = await page.evaluate(() => ({ s: window.__fsm.Game.score, c: window.__fsm.Acorn.combo }));
@@ -244,7 +249,7 @@ async function sample(page, x, y, w, h) {
     const A = window.__fsm.Acorn;
     A.nuts.length = 0; A.lives = 1;
     /* y 直接放到 H+30 之外，下一帧必定判定为漏接 */
-    A.nuts.push({ x: A.owlX + 400, y: 600, vy: 1, rot: 0, vr: 0, swing: 0 });
+    A.nuts.push({ x: A.owlX + 400, y: 600, vy: 1, kind: 'acorn', rot: 0, vr: 0, swing: 0 });
   });
   await wait(500);
   const st11 = await page.evaluate(() => ({ s: window.__fsm.Game.state, lives: window.__fsm.Acorn.lives }));
@@ -269,6 +274,79 @@ async function sample(page, x, y, w, h) {
   const st13 = await page.evaluate(() => ({ s: window.__fsm.Game.state, sc: window.__fsm.Game.score, lv: window.__fsm.Acorn.lives }));
   rec('T13', '结算页「再来一次」重开本局', st13.s === 'play' && st13.sc === 0 && st13.lv === 5,
     `state=${st13.s} score=${st13.sc} lives=${st13.lv}`);
+
+  /* ---- T43 接到坏东西：扣分 + 断连击 + 掉一条命 ----
+     先接一个好橡果把连击顶起来，再喂一个坏的，
+     这样「断连击」才真的可验证（连击本来就是 0 的话，看不出断没断）。 */
+  await page.evaluate(() => {
+    const A = window.__fsm.Acorn;
+    A.nuts.length = 0; A.lives = 3; A.combo = 0;
+    window.__fsm.Game.score = 100;
+    A.nuts.push({ x: A.owlX, y: 405, vy: 0.6, kind: 'acorn', rot: 0, vr: 0, swing: 0 });
+  });
+  await wait(500);
+  const mid43 = await page.evaluate(() => window.__fsm.Acorn.combo);
+  /* 接好橡果已经加了 10 分，所以基准要在这时候取，不能拿最初的 100 比 */
+  const before43 = await page.evaluate(() => window.__fsm.Game.score);
+  await page.evaluate(() => {
+    const A = window.__fsm.Acorn;
+    A.nuts.length = 0;
+    A.nuts.push({ x: A.owlX, y: 405, vy: 0.6, kind: 'bug', rot: 0, vr: 0, swing: 0 });
+  });
+  await wait(500);
+  const r43 = await page.evaluate(() => ({
+    s: window.__fsm.Game.score, c: window.__fsm.Acorn.combo, lv: window.__fsm.Acorn.lives
+  }));
+  rec('T43', '接到坏东西：扣分 + 断连击 + 掉一条命',
+    r43.s < before43 && mid43 >= 1 && r43.c === 0 && r43.lv === 2,
+    `连击先到 ${mid43}；接坏的后 score ${before43} -> ${r43.s}  combo=${r43.c}  lives 3 -> ${r43.lv}`);
+
+  /* ---- T44 坏东西落地 = 躲对了：不掉命，只计躲开数 ----
+     和 T11 是镜像：好橡果漏掉要扣命，坏东西漏掉必须不扣。 */
+  await page.evaluate(() => {
+    const A = window.__fsm.Acorn;
+    A.nuts.length = 0; A.lives = 3; A.dodged = 0;
+    A.nuts.push({ x: A.owlX + 400, y: 600, vy: 1, kind: 'shroom', rot: 0, vr: 0, swing: 0 });
+  });
+  await wait(500);
+  const r44 = await page.evaluate(() => ({
+    lv: window.__fsm.Acorn.lives, d: window.__fsm.Acorn.dodged
+  }));
+  rec('T44', '坏东西落地算躲开：不掉命且计数 +1', r44.lv === 3 && r44.d === 1,
+    `lives=${r44.lv}（应为 3）  dodged=${r44.d}（应为 1）`);
+
+  /* ---- T45 坏东西真的按难度概率生成，且不会连着两个都是坏的 ----
+     不读配置、直接跑 400 次生成逻辑统计 —— 读配置只能证明数字写对了，
+     证明不了生成代码真的用了它。 */
+  const dist45 = await page.evaluate(() => {
+    const f = window.__fsm, A = f.Acorn;
+    const run = (diff) => {
+      f.selectDiff(diff); f.startCurrent();
+      let good = 0, bad = 0, consec = 0, prevBad = false;
+      for (let i = 0; i < 400; i++) {
+        A.nuts.length = 0; A.spawnT = 0;
+        f._step.acorn(1);
+        const n = A.nuts[0];
+        if (!n) continue;
+        const isBad = n.kind !== 'acorn';
+        if (isBad) bad++; else good++;
+        if (isBad && prevBad) consec++;
+        prevBad = isBad;
+      }
+      return { rate: bad / (good + bad), consec: consec };
+    };
+    const easy = run('easy'), hard = run('hard');
+    f.selectDiff('easy');
+    return { easy, hard };
+  });
+  /* 实测比例会明显低于配置值（困难档配 46%，实测约 32%）——
+     「不连续两个都是坏的」这条约束会把一部分坏东西改回好的，
+     坏的比例越高，被约束改掉的越多。所以阈值按实测留足余量。 */
+  rec('T45', '坏东西比例随难度上升，且不连续两个都是坏的',
+    dist45.hard.rate > dist45.easy.rate + 0.10 &&
+    dist45.easy.rate > 0.05 && dist45.hard.rate < 0.6 &&
+    dist45.easy.consec === 0 && dist45.hard.consec === 0,
+    `简单 ${(dist45.easy.rate * 100).toFixed(1)}% / 困难 ${(dist45.hard.rate * 100).toFixed(1)}%  连续两个坏：简${dist45.easy.consec} 困${dist45.hard.consec}`);
 
   /* ---- T14 游戏中返回菜单 ---- */
   /* 返回按钮的位置在源码里可调，测试从 __fsm 现取，别写死坐标 */
@@ -437,8 +515,14 @@ async function sample(page, x, y, w, h) {
     im.onerror = () => res({ ok: false });
     im.src = 'data:image/png;base64,' + b;
   }))), b64s);
-  const allOk = decoded.length === 2 && decoded.every(d => d.ok && d.w > 100 && d.h > 100);
-  rec('T23', '两张角色立绘 base64 解码成功', allOk,
+  /* 分两类验：角色立绘（约 200×220）和掉落道具（统一 128 高、宽度不等）。
+     之前写死「正好 2 张且都 >100」，加了三张道具素材就误判失败 ——
+     按尺寸分档比数个数稳，加素材不用再改断言。 */
+  const chars = decoded.filter(d => d.ok && d.w >= 150 && d.h >= 150);
+  const items = decoded.filter(d => d.ok && d.h === 128 && d.w > 50 && d.w < 150);
+  const allOk = chars.length >= 2 && items.length >= 3;
+  rec('T23', '立绘与道具 base64 全部解码成功', allOk,
+    `立绘 ${chars.length} 张 / 道具 ${items.length} 张 :: ` +
     decoded.map((d, i) => `#${i}:${d.ok ? d.w + 'x' + d.h : 'DECODE-FAIL'}`).join(' '));
 
   /* ---- T24 难度真的改变数值（不是只改了个标签） ---- */
@@ -466,7 +550,8 @@ async function sample(page, x, y, w, h) {
   const x0 = await page.evaluate(() => window.__fsm.Acorn.owlX);
   await page.mouse.move(...(await page.evaluate(() => {
     const r = document.getElementById('game').getBoundingClientRect();
-    return [r.left + 150 * (r.width / 960), r.top + 400 * (r.height / 540)];
+    const W = window.__fsm.W, H = window.__fsm.H;
+    return [r.left + 150 * (r.width / W), r.top + 400 * (r.height / H)];
   })));
   await page.mouse.down(); await wait(500); await page.mouse.up();
   const x1 = await page.evaluate(() => window.__fsm.Acorn.owlX);
@@ -477,7 +562,10 @@ async function sample(page, x, y, w, h) {
   await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
   await page.setViewport({ width: 420, height: 860, deviceScaleFactor: 1 });
   await wait(600);
-  await clickAt(page, ...center(acornOpts[1])); await wait(300);
+  /* 重新拿一次 diffRect —— 上一行 setViewport 把 W 切成 540、H 切成 960，
+     diffRect 的 y 从 372 跳到 780，旧的 acornOpts 已经对不上新画布。 */
+  const acornOptsPortrait = await getOpts(page);
+  await clickAt(page, ...center(acornOptsPortrait[1])); await wait(300);
   const st26 = await page.evaluate(() => window.__fsm.Game.diff);
   rec('T26', '竖屏下难度按钮仍可点击', st26 === 'normal', `diff=${st26}`);
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });

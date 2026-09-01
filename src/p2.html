@@ -5,6 +5,15 @@
 var CAT_IMG = new Image(); CAT_IMG.src = 'data:image/png;base64,__CAT_B64__';
 var OWL_IMG = new Image(); OWL_IMG.src = 'data:image/png;base64,__OWL_B64__';
 
+/* 掉落道具。三张 AI 出的图，同一套绘本画风，抠成透明底后 base64 内联。
+   宽高比写死在这里 —— 素材是 128 高、宽度不等，绘制时按高度定尺寸、
+   宽度乘比例，才不会被拉扁。换素材记得同步改这三个数。 */
+var ACORN_IMG = new Image(); ACORN_IMG.src = 'data:image/png;base64,__ACORN_B64__';
+var BUG_IMG   = new Image(); BUG_IMG.src   = 'data:image/png;base64,__BUG_B64__';
+var SHROOM_IMG= new Image(); SHROOM_IMG.src= 'data:image/png;base64,__SHROOM_B64__';
+var ITEM_IMG = { acorn:ACORN_IMG, bug:BUG_IMG, shroom:SHROOM_IMG };
+var ITEM_AR  = { acorn:0.758, bug:0.938, shroom:0.852 };
+
 function drawCharImg(img, x, y, w, h){
   if(img && img.complete && img.naturalWidth > 0){
     ctx.drawImage(img, x, y, w, h);
@@ -191,31 +200,50 @@ function saveBest(id, score){
 var CARD_H = 230, CARD_Y = 118, CARD_MARGIN = 26;
 var CARD_REF_W = 250;
 function cardMetrics(){
+  if(VIEW.portrait){
+    /* 竖屏：1 列 3 行，纵向堆叠。W=540, padding 40, gap 14, cardH 200。
+       卡片比横屏矮 30px，drawMenu 里相应压缩字号 + 缩小角色。 */
+    var w = W - 80, x0 = 40, h = 200, gap = 14, y0 = 130;
+    return { w:w, gap:gap, x0:x0, h:h, y0:y0, ncol:1 };
+  }
   var n = GAMES.length;
   var gap = n >= 4 ? 22 : 45;
   var w = Math.min(CARD_REF_W, Math.floor((W - CARD_MARGIN * 2 - gap * (n - 1)) / n));
-  return { w:w, gap:gap, x0:(W - (w * n + gap * (n - 1))) / 2 };
+  return { w:w, gap:gap, x0:(W - (w * n + gap * (n - 1))) / 2, h:CARD_H, y0:CARD_Y, ncol:n };
 }
 function cardRect(i){
   var m = cardMetrics();
-  return { x: m.x0 + i * (m.w + m.gap), y: CARD_Y, w: m.w, h: CARD_H };
+  if(VIEW.portrait){
+    return { x: m.x0, y: m.y0 + i * (m.h + m.gap), w: m.w, h: m.h };
+  }
+  return { x: m.x0 + i * (m.w + m.gap), y: m.y0, w: m.w, h: m.h };
 }
 
 /* 档位按钮：三档难度时 170 宽，翻牌的四个尺寸选项窄一点才放得下 */
 var DIFF_H = 56, DIFF_Y = 372, DIFF_MARGIN = 30;
 function diffMetrics(){
   var n = optsList(curGame()).length;
+  if(VIEW.portrait){
+    /* 竖屏：放在卡片下方，三个按钮仍 1 行 3 列撑满。W=540, padding 30,
+       gap 16, w=160。位置 y 由 diffMetrics 之外的常量算 —— 卡片最后一行
+       底部 y0 + 3*h + 2*gap = 130 + 3*200 + 2*14 = 758，再 +22 = 780。 */
+    var gap = 16, x0 = 30, w = Math.floor((W - 60 - gap * (n - 1)) / n);
+    return { w:w, gap:gap, x0:x0, y:780, h:DIFF_H };
+  }
   var gap = n >= 4 ? 18 : 30;
   var w = Math.min(170, Math.floor((W - DIFF_MARGIN * 2 - gap * (n - 1)) / n));
-  return { w:w, gap:gap, x0:(W - (w * n + gap * (n - 1))) / 2 };
+  return { w:w, gap:gap, x0:(W - (w * n + gap * (n - 1))) / 2, y:DIFF_Y, h:DIFF_H };
 }
 function diffRect(i){
   var m = diffMetrics();
-  return { x: m.x0 + i * (m.w + m.gap), y: DIFF_Y, w: m.w, h: DIFF_H };
+  return { x: m.x0 + i * (m.w + m.gap), y: m.y, w: m.w, h: m.h };
 }
 
 function musicRect(){ return { x:14, y:14, w:56, h:56 }; }
-function linkRect(){ return { x:850, y:14, w:96, h:44 }; }
+function linkRect(){
+  if(VIEW.portrait) return { x:W - 96 - 14, y:14, w:96, h:44 };
+  return { x:850, y:14, w:96, h:44 };
+}
 
 function drawMusicBtn(r){
   var on = Audio2.musicOn;
@@ -285,19 +313,72 @@ function hoverRing(r, rad){
   ctx.restore();
 }
 
+/* 掉落道具：AI 位图优先，没加载好就矢量兜底。
+   (cx,cy) 是中心，h 是绘制高度，宽度按素材比例算 —— 三张素材宽高比不一样，
+   统一按高度定尺寸才不会有的胖有的瘦。 */
+function drawItemImg(kind, cx, cy, h, rot){
+  var img = ITEM_IMG[kind];
+  var w = h * (ITEM_AR[kind] || 0.85);
+  ctx.save();
+  ctx.translate(cx, cy);
+  if(rot) ctx.rotate(rot);
+  if(img && img.complete && img.naturalWidth > 0){
+    ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  }else{
+    drawFallbackItem(kind, w, h);
+  }
+  ctx.restore();
+}
+
+/* 矢量兜底：全部用 w/h 的比例写，任意尺寸都不会变形 */
+function drawFallbackItem(kind, w, h){
+  if(kind === 'bug'){
+    /* 毛毛虫：一串圆珠 + 触角 + 一对大眼睛 */
+    ctx.fillStyle = '#7cc24a';
+    for(var i = 0; i < 5; i++){
+      var bx = -w * 0.30 + i * w * 0.15, by = Math.sin(i * 1.1) * h * 0.05;
+      ctx.beginPath(); ctx.arc(bx, by, w * 0.13, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.strokeStyle = '#4d8a2c'; ctx.lineWidth = Math.max(1, w * 0.035); ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-w * 0.30, -h * 0.10); ctx.lineTo(-w * 0.36, -h * 0.30);
+    ctx.moveTo(-w * 0.30, -h * 0.10); ctx.lineTo(-w * 0.20, -h * 0.28);
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(-w * 0.14, -h * 0.06, w * 0.075, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(w * 0.04, -h * 0.06, w * 0.075, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2f2a26';
+    ctx.beginPath(); ctx.arc(-w * 0.13, -h * 0.05, w * 0.038, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(w * 0.05, -h * 0.05, w * 0.038, 0, Math.PI * 2); ctx.fill();
+    return;
+  }
+  if(kind === 'shroom'){
+    /* 毒蘑菇：红伞 + 白点 + 浅柄 */
+    ctx.fillStyle = '#e8ddc8';
+    roundRect(-w * 0.14, -h * 0.02, w * 0.28, h * 0.42, w * 0.06); ctx.fill();
+    ctx.fillStyle = '#d8443c';
+    ctx.beginPath(); ctx.ellipse(0, 0, w * 0.44, h * 0.30, 0, Math.PI, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, 0, w * 0.44, h * 0.08, 0, 0, Math.PI); ctx.fill();
+    ctx.fillStyle = '#fdf6e6';
+    ctx.beginPath(); ctx.arc(-w * 0.20, -h * 0.14, w * 0.075, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(w * 0.10, -h * 0.22, w * 0.065, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(w * 0.26, -h * 0.09, w * 0.055, 0, Math.PI * 2); ctx.fill();
+    return;
+  }
+  /* 橡果 */
+  ctx.fillStyle = '#a9703f';
+  ctx.beginPath(); ctx.ellipse(0, 0, w * 0.50, h * 0.50, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#8a5a30';
+  ctx.beginPath(); ctx.ellipse(-w * 0.18, -h * 0.11, w * 0.16, h * 0.21, 0.4, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#6b4522';
+  roundRect(-w * 0.36, -h * 0.64, w * 0.73, h * 0.25, h * 0.10); ctx.fill();
+  ctx.fillRect(-w * 0.07, -h * 0.79, w * 0.14, h * 0.21);
+}
+
 /* 小橡果图标。接橡果卡片里只有一只猫头鹰，
    另外两张卡片都是猫 + 猫头鹰两只，视觉重量差一截，用它补上。 */
 function drawAcornIcon(cx, cy, s){
-  ctx.save();
-  ctx.translate(cx, cy); ctx.scale(s, s);
-  ctx.fillStyle = '#a9703f';
-  ctx.beginPath(); ctx.ellipse(0, 0, 11, 14, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#8a5a30';
-  ctx.beginPath(); ctx.ellipse(-4, -3, 3.5, 6, 0.4, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#6b4522';
-  roundRect(-8, -18, 16, 7, 3); ctx.fill();
-  ctx.fillRect(-1.5, -22, 3, 6);
-  ctx.restore();
+  drawItemImg('acorn', cx, cy, 28 * s);
 }
 
 /* 卡片字号：按缩放比缩小，但不低于 min —— 加游戏后卡片变窄，
@@ -307,13 +388,19 @@ function cardFont(base, min, sc){ return Math.max(min, Math.round(base * sc)); }
 function drawMenu(){
   drawBackdrop(Game.time * 60, 0);
 
+  /* 标题区。横屏 62/92，竖屏 76/108（顶栏音乐+放学跑酷按钮占了顶部
+     14-70 区域，标题下移不挡按钮；竖屏 H=960 给标题 30 字号后两侧空白多）。 */
+  var titleY = VIEW.portrait ? 76 : 62;
+  var subY = VIEW.portrait ? 108 : 92;
+  var titleSize = VIEW.portrait ? 28 : 34;
+  var subSize = VIEW.portrait ? 13 : 15;
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   ctx.fillStyle = '#1f4d2e';
-  ctx.font = '500 34px system-ui,sans-serif';
-  ctx.fillText('森林学校 · 课间十分钟', W / 2, 62);
+  ctx.font = '500 ' + titleSize + 'px system-ui,sans-serif';
+  ctx.fillText('森林学校 · 课间十分钟', W / 2, titleY);
   ctx.fillStyle = 'rgba(31,77,46,.72)';
-  ctx.font = '400 15px system-ui,sans-serif';
-  ctx.fillText(curGame().mode === 'grid' ? '选一个游戏，再挑棋盘多大' : '选一个游戏，再选个难度', W / 2, 92);
+  ctx.font = '400 ' + subSize + 'px system-ui,sans-serif';
+  ctx.fillText(curGame().mode === 'grid' ? '选一个游戏，再挑棋盘多大' : '选一个游戏，再选个难度', W / 2, subY);
 
   for(var i = 0; i < GAMES.length; i++){
     var g = GAMES[i], r = cardRect(i);
@@ -325,8 +412,47 @@ function drawMenu(){
     ctx.lineWidth = sel ? 3.5 : (hov ? 2.5 : 1.5);
     roundRect(r.x, r.y, r.w, r.h, 16); ctx.stroke();
 
-    /* 角色形象。卡片变窄时内容等比缩小，字号设下限保证还能读 */
     var cx = r.x + r.w / 2;
+    if(VIEW.portrait){
+      /* 竖屏：横排布局——左角色（约 80×80），右文字（左对齐）。
+         角色在卡片内垂直居中；文字块垂直偏上对齐，下方留位置给 tip。 */
+      var sc = 0.78, charH = 105 * sc, charW = 104 * sc;
+      var charX = r.x + 22;
+      var charY = r.y + (r.h - charH) / 2 - 6;
+      if(g.who === 'owl'){
+        drawOwl(charX, charY, charW, charH);
+        drawAcornIcon(charX + 64 * sc, charY + 66 * sc, 0.9 * sc);
+      }else if(g.who === 'cat'){
+        drawCat(charX, charY, charW, charH);
+      }else{
+        drawCat(charX, charY, 84 * sc, 96 * sc);
+        drawOwl(charX + 84 * sc, charY, 84 * sc, 96 * sc);
+      }
+      /* 文字区：左对齐，从 charX + charW + 18 开始 */
+      var tx = charX + charW + 18;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#20402c';
+      ctx.font = '500 22px system-ui,sans-serif';
+      ctx.fillText(g.name, tx, r.y + 56);
+      ctx.fillStyle = 'rgba(32,64,44,.7)';
+      ctx.font = '400 13px system-ui,sans-serif';
+      ctx.fillText(g.desc, tx, r.y + 84);
+      ctx.fillStyle = '#8a6d3b';
+      ctx.font = '500 14px system-ui,sans-serif';
+      ctx.fillText('最高分 ' + (Game.best[bestKey(g.id, Game.diffs[g.id])] || 0), tx, r.y + 110);
+      if(sel){
+        ctx.fillStyle = 'rgba(76,175,109,.16)';
+        roundRect(tx - 4, r.y + 130, r.w - (tx - r.x) - 12, 56, 9); ctx.fill();
+        ctx.fillStyle = '#2f7a46';
+        ctx.font = '400 12px system-ui,sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(g.tip, tx + 4, r.y + 158);
+        ctx.textBaseline = 'alphabetic';
+      }
+      continue;
+    }
+
+    /* 角色形象。卡片变窄时内容等比缩小，字号设下限保证还能读 */
     var sc = r.w / CARD_REF_W;
     if(g.who === 'owl'){
       drawOwl(cx - 62 * sc, r.y + 18, 104 * sc, 105 * sc);
@@ -364,10 +490,11 @@ function drawMenu(){
 
   /* 档位选择器：接橡果是三档难度，翻牌是棋盘尺寸（牌多就难，所以直接选几×几） */
   var opts = optsList(curGame());
+  var dm = diffMetrics();
   ctx.fillStyle = 'rgba(31,77,46,.8)';
   ctx.font = '400 16px system-ui,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-  ctx.fillText(curGame().mode === 'grid' ? '棋盘' : '难度', W / 2, DIFF_Y - 12);
+  ctx.fillText(curGame().mode === 'grid' ? '棋盘' : '难度', W / 2, dm.y - 12);
   for(var d = 0; d < opts.length; d++){
     var dd = opts[d], dr = diffRect(d);
     var on = (Game.diff === dd.id);
@@ -379,7 +506,7 @@ function drawMenu(){
     ctx.lineWidth = (on || hov) ? 2.5 : 1.5;
     roundRect(dr.x, dr.y, dr.w, dr.h, 12); ctx.stroke();
     ctx.fillStyle = on ? '#ffffff' : '#33513f';
-    ctx.font = '500 20px system-ui,sans-serif';
+    ctx.font = '500 ' + (VIEW.portrait ? 18 : 20) + 'px system-ui,sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(dd.name, dr.x + dr.w / 2, dr.y + dr.h / 2 + 1);
     ctx.globalAlpha = 1;
@@ -388,15 +515,22 @@ function drawMenu(){
   drawMusicBtn(musicRect());
   drawLinkBtn(linkRect());
 
-  /* 底部操作提示 13px 太小：手机上画布被缩到 0.41 倍，实际只有 5px，等于没写 */
+  /* 底部操作提示。横屏 13px 太小：手机上画布被缩到 0.41 倍，实际只有 5px。
+     PR #11 提到 15px，竖屏 W=540 直接给 16。 */
   ctx.fillStyle = 'rgba(31,77,46,.6)';
-  ctx.font = '400 15px system-ui,sans-serif';
+  ctx.font = '400 ' + (VIEW.portrait ? 16 : 15) + 'px system-ui,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   /* 数字键提示跟着游戏数量走，别再写死「1 2 3」 */
   var nums = GAMES.map(function(_, i){ return String(i + 1); }).join(' ');
   var grid = curGame().mode === 'grid';
-  ctx.fillText('键盘：← → 选择 · 空格 确认 / 动作 · ' + nums + ' 选游戏 · Esc 返回', W / 2, H - 34);
-  ctx.fillText('触屏：点卡片选游戏，点' + (grid ? '棋盘' : '难度') + '，游戏中按屏幕提示操作', W / 2, H - 14);
+  /* 竖屏下两行紧贴底部（H=960, 留 60px），横屏留 34/14 */
+  if(VIEW.portrait){
+    ctx.fillText('键盘：← → 选择 · 空格 确认 · ' + nums + ' 选游戏 · Esc 返回', W / 2, H - 38);
+    ctx.fillText('触屏：点卡片选游戏，点' + (grid ? '棋盘' : '难度') + '，游戏中按屏幕提示操作', W / 2, H - 16);
+  }else{
+    ctx.fillText('键盘：← → 选择 · 空格 确认 / 动作 · ' + nums + ' 选游戏 · Esc 返回', W / 2, H - 34);
+    ctx.fillText('触屏：点卡片选游戏，点' + (grid ? '棋盘' : '难度') + '，游戏中按屏幕提示操作', W / 2, H - 14);
+  }
 }
 
 function openRunner(){
