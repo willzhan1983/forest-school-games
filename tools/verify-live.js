@@ -1,0 +1,208 @@
+/*
+ * 线上复验（部署后跑，本地测过不算数）
+ *
+ *   NODE_PATH=/Users/mac/.workbuddy/binaries/node/workspace/node_modules \
+ *   /Users/mac/.workbuddy/binaries/node/versions/22.22.2-2/bin/node tools/verify-live.js
+ *   # 或指定地址：TARGET_URL=https://... node tools/verify-live.js
+ *
+ * 为什么不能只信本地测试：
+ *   本地跑的是 merge 出来的 index.html，线上跑的是 Pages 构建产物。
+ *   base64 在构建环节被截断、素材路径写错、SW 缓存住旧版本 —— 这些
+ *   本地全都看不出来。尤其 SW 是 network-first，缓存没更新时线上
+ *   会一直跑旧代码，页面却显示正常。
+ *
+ * 检查项 V1~V10：加载健康度 + 素材解码 + 尺寸/速度机制 + 像素级渲染 + 竖屏。
+ */
+const puppeteer = require('puppeteer-core');
+
+const URL = process.env.TARGET_URL || 'https://willzhan1983.github.io/forest-school-games/';
+const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+const rows = [];
+function rec(id, name, pass, detail) {
+  rows.push({ id, name, pass, detail });
+  console.log(`${pass ? 'PASS' : 'FAIL'}  ${id}  ${name}${detail ? '  :: ' + detail : ''}`);
+}
+
+(async () => {
+  const browser = await puppeteer.launch({
+    executablePath: CHROME,
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-dev-shm-usage']
+  });
+  const page = await browser.newPage();
+  const errs = [], warns = [];
+  page.on('pageerror', e => errs.push(String(e)));
+  page.on('console', m => {
+    if (m.type() === 'error') errs.push(m.text());
+    if (m.type() === 'warning') warns.push(m.text());
+  });
+
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await page.goto(URL, { waitUntil: 'networkidle0', timeout: 60000 });
+  await wait(1500);   /* 等素材解码 + SW 注册 */
+
+  /* V1 加载健康度 */
+  rec('V1', '线上加载零错误零警告', errs.length === 0 && warns.length === 0,
+    `error=${errs.length} warning=${warns.length}${errs[0] ? ' | ' + errs[0].slice(0, 90) : ''}`);
+
+  /* V2 素材完整。立绘和道具都是 new Image() 建的，既不在 DOM 里也不挂在
+     window 上，没法直接枚举 —— 改成把线上 HTML 抓回来，抠出里面的 base64
+     逐个解码。这样验的是「用户真正拿到的那个文件」，SW 返回缓存也算进来。
+     base64 在构建环节被截断的话，本地测试看不出来，只有这一步能抓到。 */
+  const imgs = await page.evaluate(async () => {
+    const html = await (await fetch(location.href)).text();
+    const re = /data:image\/png;base64,([A-Za-z0-9+/=]{200,})/g;
+    const list = []; let m;
+    while ((m = re.exec(html)) !== null && list.length < 12) {
+      const d = await new Promise(r => {
+        const im = new Image();
+        im.onload = () => r({ w: im.naturalWidth, h: im.naturalHeight });
+        im.onerror = () => r({ w: 0, h: 0 });
+        im.src = 'data:image/png;base64,' + m[1];
+      });
+      list.push(d);
+    }
+    return list;
+  });
+  const imgsOk = imgs.length >= 5 && imgs.every(d => d.w > 0 && d.h > 0);
+  rec('V2', '五张素材（2 立绘 + 3 道具）线上完整可解码', imgsOk,
+    `共 ${imgs.length} 张：` + imgs.map(d => d.w > 0 ? `${d.w}×${d.h}` : 'DECODE-FAIL').join(' '));
+
+  /* V3 掉落物尺寸。写死过 34，后来按画布短边改成 48。 */
+  const szLand = await page.evaluate(() => ({ s: window.__fsm.itemSize(), W: window.__fsm.W, H: window.__fsm.H }));
+  rec('V3', '横屏掉落物 48px（旧版 34px）', szLand.s === 48,
+    `${szLand.W}×${szLand.H} -> ${szLand.s}px`);
+
+  /* V4 竖屏尺寸一致 —— 短边都是 540，两个朝向必须一样大 */
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+  await wait(800);
+  const szPort = await page.evaluate(() => ({
+    s: window.__fsm.itemSize(), W: window.__fsm.W, H: window.__fsm.H,
+    owlY: Math.round(window.__fsm.H * 0.785)
+  }));
+  rec('V4', '竖屏掉落物同样 48px，猫头鹰不悬空（owlY=754）',
+    szPort.s === 48 && szPort.owlY === 754,
+    `${szPort.W}×${szPort.H} -> ${szPort.s}px  owlY=${szPort.owlY}`);
+
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await wait(600);
+
+  /* V5 难度爬升机制：ramp 从 ~1 涨到 >1.4（普通档配 1.60） */
+  await page.evaluate(() => {
+    const f = window.__fsm;
+    f.selectGame('acorn'); f.selectDiff('normal'); f.startCurrent();
+  });
+  await wait(400);
+  const ramp = await page.evaluate(() => {
+    const f = window.__fsm, A = f.Acorn;
+    A.left = A.timeLimit * 0.98; const early = f.acornRamp();
+    A.left = A.timeLimit * 0.02; const late = f.acornRamp();
+    A.left = A.timeLimit * 0.9;
+    return { early: +early.toFixed(3), late: +late.toFixed(3) };
+  });
+  rec('V5', '线上速度倍率随进度爬升', ramp.late > ramp.early * 1.4 && ramp.early < 1.05,
+    `开局 ×${ramp.early} -> 局末 ×${ramp.late}`);
+
+  /* V6 速度条真的画出来了（像素采样，不看变量） */
+  const pips = await page.evaluate(async () => {
+    const f = window.__fsm, A = f.Acorn;
+    const cv = document.getElementById('game'), c = cv.getContext('2d');
+    const sx = cv.width / f.W, sy = cv.height / f.H;
+    const count = async (ratio) => {
+      A.nuts.length = 0; A.spawnT = 1e9; f.Game.banner = 0;
+      A.left = A.timeLimit * ratio;
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const d = c.getImageData(Math.round(76 * sx), Math.round(82 * sy), Math.round(84 * sx), Math.round(20 * sy)).data;
+      let lit = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        if (r > 150 && g < 170 && b < 110 && r > b + 60) lit++;
+      }
+      return lit;
+    };
+    const early = await count(0.98), late = await count(0.02);
+    A.left = A.timeLimit * 0.9;
+    return { early, late };
+  });
+  rec('V6', '速度条档位线上可见（亮像素递增）', pips.late > pips.early * 1.8,
+    `开局 ${pips.early} -> 局末 ${pips.late}`);
+
+  /* V7 三个道具颜色可分 —— 分不清的话「别碰坏东西」这条规则就废了 */
+  const colors = await page.evaluate(async () => {
+    const f = window.__fsm, A = f.Acorn;
+    A.nuts.length = 0; A.spawnT = 1e9; f.Game.banner = 0;
+    /* 必须清掉「加速啦！」：它画在 (W/2, H*0.30)，正好压在中间那个采样点上。
+       不清的话采到的是红字不是毛毛虫，断言却可能照样过 —— 假绿灯比红灯更危险。 */
+    A.flash = 0; A.left = A.timeLimit * 0.9;
+    const W = f.W;
+    const items = [['acorn', W * 0.28], ['bug', W * 0.50], ['shroom', W * 0.72]];
+    for (const [k, x] of items) A.nuts.push({ x, y: 260, vy: 0, kind: k, rot: 0, vr: 0, swing: 0 });
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const cv = document.getElementById('game'), c = cv.getContext('2d');
+    const sx = cv.width / f.W, sy = cv.height / f.H;
+    const out = {};
+    for (const [k, x] of items) {
+      const d = c.getImageData(Math.round((x - 7) * sx), Math.round((260 - 7) * sy), Math.round(14 * sx), Math.round(14 * sy)).data;
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; }
+      out[k] = [Math.round(r / n), Math.round(g / n), Math.round(b / n)];
+    }
+    return out;
+  });
+  const dist = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+  const dAB = dist(colors.acorn, colors.bug), dAS = dist(colors.acorn, colors.shroom), dBS = dist(colors.bug, colors.shroom);
+  /* 除了「两两分得开」，还要看色相方向对不对：橡果偏棕、虫偏绿、菇偏红。
+     只比色差的话，哪天把毛毛虫换成紫色的照样能过 —— 而紫色和毒蘑菇的红
+     在小尺寸下对孩子来说就是同一个「别碰」，分辨成本白加了。 */
+  const hueOk =
+    colors.acorn[0] > colors.acorn[1] && colors.acorn[1] > colors.acorn[2] &&
+    colors.bug[1] > colors.bug[0] && colors.bug[1] > colors.bug[2] &&
+    colors.shroom[0] > colors.shroom[1] && colors.shroom[0] > colors.shroom[2];
+  rec('V7', '三道具线上色彩可分且色相正确（棕/绿/红）',
+    dAB > 80 && dAS > 80 && dBS > 80 && hueOk,
+    `橡果 rgb(${colors.acorn}) 虫 rgb(${colors.bug}) 菇 rgb(${colors.shroom}) | 色差 ${dAB}/${dAS}/${dBS} 色相${hueOk ? '对' : '错'}`);
+
+  /* V8 坏道具机制线上生效：接到坏东西要扣分 + 断连击 + 掉命 */
+  const bad = await page.evaluate(async () => {
+    const f = window.__fsm, A = f.Acorn;
+    f.selectGame('acorn'); f.selectDiff('normal'); f.startCurrent();
+    await new Promise(r => setTimeout(r, 200));
+    A.nuts.length = 0; A.spawnT = 1e9;
+    A.nuts.push({ x: A.owlX, y: 405, vy: 0.6, kind: 'acorn', rot: 0, vr: 0, swing: 0 });
+    await new Promise(r => setTimeout(r, 400));
+    const afterGood = { s: f.Game.score, c: A.combo };
+    A.nuts.length = 0;
+    A.nuts.push({ x: A.owlX, y: 405, vy: 0.6, kind: 'bug', rot: 0, vr: 0, swing: 0 });
+    await new Promise(r => setTimeout(r, 400));
+    return { afterGood, s: f.Game.score, c: A.combo, lv: A.lives };
+  });
+  rec('V8', '坏道具机制线上生效（扣分 + 断连击 + 掉命）',
+    bad.afterGood.s > 0 && bad.afterGood.c >= 1 && bad.s < bad.afterGood.s && bad.c === 0 && bad.lv === 2,
+    `接好 score=${bad.afterGood.s} combo=${bad.afterGood.c}；接坏后 score=${bad.s} combo=${bad.c} lives=${bad.lv}`);
+
+  /* V9 菜单能正常开游戏（构建产物最容易在这里断掉） */
+  const flow = await page.evaluate(async () => {
+    const f = window.__fsm;
+    f.Game.state = 'menu'; f.selectGame('memory'); f.selectDiff('g44'); f.startCurrent();
+    await new Promise(r => setTimeout(r, 300));
+    return { state: f.Game.state, id: f.curGame().id, n: f.Mem.cards.length };
+  });
+  rec('V9', '菜单能开局（翻牌 4×4 = 16 张）',
+    flow.state === 'play' && flow.id === 'memory' && flow.n === 16,
+    `state=${flow.state} game=${flow.id} cards=${flow.n}`);
+
+  /* V10 全程结束仍零错误（跑完上面这些操作后复检） */
+  rec('V10', '复验全程零运行时错误', errs.length === 0 && warns.length === 0,
+    `error=${errs.length} warning=${warns.length}${errs[0] ? ' | ' + errs[0].slice(0, 90) : ''}`);
+
+  const passed = rows.filter(r => r.pass).length;
+  console.log(`\n===== ${passed} / ${rows.length} PASS  =====  ${URL}`);
+  if (passed !== rows.length) {
+    console.log('FAILED:');
+    rows.filter(r => !r.pass).forEach(r => console.log(`  ${r.id} ${r.name} :: ${r.detail}`));
+  }
+  await browser.close();
+  process.exit(passed === rows.length ? 0 : 1);
+})().catch(e => { console.error(e); process.exit(1); });
