@@ -371,7 +371,10 @@ var GAMES = [
   { id:'acorn',  name:'接 橡 果', who:'owl', mode:'level', drag:true, desc:'涂涂滑翔接橡果',
     tip:'左右移动接住掉落的橡果，连击有加成' },
   { id:'memory', name:'记 忆 翻 牌', who:'both', mode:'grid', desc:'找出一样的动物',
-    tip:'翻开两张，一样的就配对成功' }
+    tip:'翻开两张，一样的就配对成功' },
+  /* 找不同走三档难度（DIFFS），和翻牌的棋盘尺寸（GRIDS）不是一回事 */
+  { id:'spot',   name:'找 不 同', who:'both', mode:'level', desc:'两幅图里找不同',
+    tip:'找出两幅图不一样的地方' }
 ];
 
 var DIFFS = [
@@ -1205,6 +1208,432 @@ function drawMemory(){
 
 
 /* ============================================================
+ * 游戏三：找不同（观察力）
+ * ------------------------------------------------------------
+ * 与接橡果（反应）、记忆翻牌（记忆）错开，这个是纯观察力。
+ *
+ * 实现要点：
+ * 1. 场景 = 一组程序化生成的 prop（树/灌木/蘑菇/花/石头/云/鸟/蝴蝶），
+ *    左右两幅各画一次，右幅在副本上施加 N 种变换造出差异
+ * 2. 差异记录成 hotspot，左右各一组坐标，点哪边都能命中
+ * 3. 所有计时/位移一律乘 dt，否则 120Hz 屏上倒计时和动画会快一倍
+ *
+ * 加这个游戏只动了三处：p2 的 GAMES 加一条、本文件、merge.js 的 PARTS。
+ * p3 / p4 一个字没改 —— 主循环、点击分发、开场横幅都是按 id 查表的。
+ * ========================================================== */
+
+/* 面板几何：960 宽里放两幅 444 的图，左右各留 24，中间隔 24 */
+var SPOT_W = 444, SPOT_H = 396, SPOT_TOP = 92;
+function spotPanel(i){ return { x: 24 + i * (SPOT_W + 24), y: SPOT_TOP, w: SPOT_W, h: SPOT_H }; }
+
+/* 难度：差异数 / 场景元素数 / 点错机会 / 限时（秒，0=不限）/ 计分基数 */
+var SPOT_CFG = {
+  easy:   { diffs:3, props:9,  lives:5, time:0,  base:900,  kinds:['color','size'] },
+  normal: { diffs:5, props:14, lives:4, time:0,  base:1300, kinds:['color','size','remove','move'] },
+  hard:   { diffs:7, props:18, lives:3, time:75, base:1700, kinds:['color','size','remove','move','flip'] }
+};
+function spotCfg(){
+  for(var i = 0; i < DIFFS.length; i++) if(DIFFS[i].id === Game.diff) return SPOT_CFG[Game.diff] || SPOT_CFG.easy;
+  return SPOT_CFG.easy;
+}
+
+var Spot = {
+  L:[], R:[], spots:[], found:0, misses:0,
+  lives:0, maxLives:0, el:0, left:0, over:false,
+  wrongT:0, wrongX:0, wrongY:0, timeLimit:0
+};
+
+/* ---------- 调色板 ----------
+   同一类里的颜色必须肉眼能分辨，否则「换个颜色」这种差异等于没做。
+   树的配色走「春夏 → 秋」：绿 / 深绿 / 黄绿 / 橙 / 赭，都是合理的树的颜色。 */
+var SPOT_PAL = {
+  tree:      ['#3f8f4f','#2f7a46','#7cc356','#e0a03c','#c96a3a'],
+  bush:      ['#4c9c58','#357a45','#8ec96a','#d9a83c'],
+  mushroom:  ['#e05a4a','#f0a03c','#d94f8c','#8e6bd0','#5ac0c9'],
+  flower:    ['#f2b93c','#e8524f','#c86fd9','#4a90d9','#fbf7f2'],
+  rock:      ['#8d9aa3','#6f7d87','#b0bac0'],
+  bird:      ['#4a90d9','#e8524f','#f2b93c','#6fb85c'],
+  cloud:     ['#ffffff','#eef4f7','#dfe9ef'],
+  butterfly: ['#f2b93c','#e8524f','#9b6bd6','#4a90d9']
+};
+/* 每类能做哪些差异。
+   cloud 不许 color —— 三个颜色都是近白，换了看不出来；
+   rock 不许 color —— 灰色系差异太弱，只给大小/位移/消失；
+   flip 只给有朝向的（鸟、蝴蝶），树和灌木画得太对称，翻了等于没翻。 */
+var SPOT_KINDS = {
+  tree:      ['color','size','move'],
+  bush:      ['color','size','move'],
+  mushroom:  ['color','size','move','remove'],
+  flower:    ['color','size','move','remove'],
+  rock:      ['size','move','remove'],
+  bird:      ['color','move','remove','flip'],
+  cloud:     ['size','move','remove'],
+  butterfly: ['color','move','remove','flip']
+};
+
+function shuffleArr(a){
+  for(var i = a.length - 1; i > 0; i--){
+    var j = rndInt(0, i), t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+function cloneProp(p){ return { t:p.t, x:p.x, y:p.y, s:p.s, c:p.c, f:p.f, gone:false }; }
+
+/* ---------- 元素绘制：全部以 (0,0) 为锚点 ----------
+   地面元素（tree/bush/mushroom/flower/rock）锚点是底部中心，向上长；
+   天空元素（cloud/bird/butterfly）锚点是几何中心。 */
+var SPOT_DRAW = {
+  tree: function(c){
+    ctx.fillStyle = '#8a5a30';
+    roundRect(-7, -46, 14, 46, 3); ctx.fill();
+    ctx.fillStyle = SPOT_PAL.tree[c];
+    ctx.beginPath(); ctx.arc(0, -64, 30, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(-23, -46, 22, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(23, -48, 24, 0, 6.2832); ctx.fill();
+  },
+  bush: function(c){
+    ctx.fillStyle = SPOT_PAL.bush[c];
+    ctx.beginPath(); ctx.arc(-18, -12, 18, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, -21, 22, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(18, -12, 18, 0, 6.2832); ctx.fill();
+  },
+  mushroom: function(c){
+    ctx.fillStyle = '#f2e6cf';
+    roundRect(-6, -20, 12, 20, 4); ctx.fill();
+    ctx.fillStyle = SPOT_PAL.mushroom[c];
+    ctx.beginPath(); ctx.ellipse(0, -20, 22, 16, 0, Math.PI, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.85)';
+    ctx.beginPath(); ctx.arc(-9, -26, 4.2, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(7, -29, 3.2, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(13, -23, 2.6, 0, 6.2832); ctx.fill();
+  },
+  flower: function(c){
+    ctx.strokeStyle = '#4a8f52'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -26); ctx.stroke();
+    ctx.fillStyle = '#5aa85f';
+    ctx.beginPath(); ctx.ellipse(-9, -12, 8, 4, -0.5, 0, 6.2832); ctx.fill();
+    ctx.fillStyle = SPOT_PAL.flower[c];
+    for(var i = 0; i < 6; i++){
+      var a = i * Math.PI / 3;
+      ctx.beginPath(); ctx.ellipse(Math.cos(a) * 9, -26 + Math.sin(a) * 9, 6.2, 6.2, 0, 0, 6.2832); ctx.fill();
+    }
+    ctx.fillStyle = '#e8a72c';
+    ctx.beginPath(); ctx.arc(0, -26, 5, 0, 6.2832); ctx.fill();
+  },
+  rock: function(c){
+    ctx.fillStyle = SPOT_PAL.rock[c];
+    ctx.beginPath(); ctx.ellipse(0, -12, 26, 14, 0, 0, 6.2832); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.22)';
+    ctx.beginPath(); ctx.ellipse(-8, -17, 11, 6, -0.3, 0, 6.2832); ctx.fill();
+  },
+  cloud: function(c){
+    ctx.fillStyle = SPOT_PAL.cloud[c];
+    ctx.beginPath(); ctx.arc(-24, 6, 15, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(-8, -6, 20, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(12, -4, 18, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(26, 8, 13, 0, 6.2832); ctx.fill();
+  },
+  bird: function(c){
+    ctx.fillStyle = SPOT_PAL.bird[c];
+    ctx.beginPath(); ctx.ellipse(0, 0, 15, 11, 0, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(13, -8, 8, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-13, -2); ctx.lineTo(-27, -9); ctx.lineTo(-25, 3); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,.14)';
+    ctx.beginPath(); ctx.ellipse(-2, -2, 12, 7, -0.4, 0, 6.2832); ctx.fill();
+    ctx.fillStyle = '#e8a72c';
+    ctx.beginPath(); ctx.moveTo(20, -8); ctx.lineTo(30, -5); ctx.lineTo(20, -1); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#2f2a26';
+    ctx.beginPath(); ctx.arc(15, -10, 2, 0, 6.2832); ctx.fill();
+  },
+  butterfly: function(c){
+    ctx.fillStyle = SPOT_PAL.butterfly[c];
+    ctx.beginPath(); ctx.ellipse(-11, -7, 11, 9, -0.5, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(11, -7, 11, 9, 0.5, 0, 6.2832); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.45)';
+    ctx.beginPath(); ctx.ellipse(-9, -1, 7, 6, -0.5, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(9, -1, 7, 6, 0.5, 0, 6.2832); ctx.fill();
+    ctx.fillStyle = '#3a3f47';
+    roundRect(-2.5, -10, 5, 20, 2.5); ctx.fill();
+  }
+};
+
+function drawSpotProp(p, ox, oy){
+  if(p.gone) return;
+  ctx.save();
+  ctx.translate(ox + p.x, oy + p.y);
+  ctx.scale(p.s * p.f, p.s);
+  SPOT_DRAW[p.t](p.c);
+  ctx.restore();
+}
+
+/* ---------- 场景生成 ---------- */
+/* 槽位网格：天空 2 行 × 6 列，地面 3 行 × 6 列，共 30 个。
+   生成时随机取 N 个，天然避免元素叠在一起。 */
+function spotSlots(){
+  var s = [], cols = 6, c, r;
+  var skyY = [44, 104], gndY = [252, 312, 366];
+  for(r = 0; r < skyY.length; r++)
+    for(c = 0; c < cols; c++)
+      s.push({ x: 37 + c * 74 + rnd(-14, 14), y: skyY[r] + rnd(-9, 9), zone: 'sky' });
+  for(r = 0; r < gndY.length; r++)
+    for(c = 0; c < cols; c++)
+      s.push({ x: 37 + c * 74 + rnd(-16, 16), y: gndY[r] + rnd(-10, 10), zone: 'gnd' });
+  return s;
+}
+
+function spotGen(n){
+  var slots = shuffleArr(spotSlots());
+  var skyT = ['cloud', 'bird', 'butterfly'];
+  var gndT = ['tree', 'bush', 'mushroom', 'flower', 'rock'];
+  var out = [];
+  for(var i = 0; i < n && i < slots.length; i++){
+    var sl = slots[i];
+    var types = (sl.zone === 'sky') ? skyT : gndT;
+    var t = types[rndInt(0, types.length - 1)];
+    out.push({ t:t, x:sl.x, y:sl.y, s:rnd(0.92, 1.08), c:rndInt(0, SPOT_PAL[t].length - 1), f:1, gone:false });
+  }
+  return out;
+}
+
+/* 取交集：这类元素能做的差异 ∩ 这个难度允许的差异 */
+function spotKinds(type, allowed){
+  var ks = SPOT_KINDS[type] || ['size'];
+  var out = [];
+  for(var i = 0; i < ks.length; i++) if(allowed.indexOf(ks[i]) >= 0) out.push(ks[i]);
+  return out;
+}
+
+function startSpot(){
+  var c = spotCfg();
+  var L = spotGen(c.props);
+  var R = [];
+  for(var i = 0; i < L.length; i++) R.push(cloneProp(L[i]));
+
+  var spots = [];
+  var order = shuffleArr(L.map(function(_, i){ return i; }));
+  for(var k = 0; k < order.length && spots.length < c.diffs; k++){
+    var idx = order[k], p = L[idx], q = R[idx];
+    var ks = spotKinds(p.t, c.kinds);
+    if(!ks.length) continue;
+    var kind = ks[rndInt(0, ks.length - 1)];
+
+    var lx = p.x, ly = p.y, rx = q.x, ry = q.y;
+    if(kind === 'color'){
+      var pal = SPOT_PAL[p.t];
+      if(pal.length < 2) continue;
+      var nc = q.c;
+      while(nc === q.c) nc = rndInt(0, pal.length - 1);
+      q.c = nc;
+    }else if(kind === 'size'){
+      q.s = p.s * (Math.random() < 0.5 ? rnd(0.58, 0.70) : rnd(1.36, 1.55));
+    }else if(kind === 'move'){
+      var dx = (Math.random() < 0.5 ? -1 : 1) * rnd(30, 44);
+      var dy = (Math.random() < 0.5 ? -1 : 1) * rnd(24, 36);
+      q.x = clamp(q.x + dx, 36, SPOT_W - 36);
+      q.y = clamp(q.y + dy, 30, SPOT_H - 14);
+      rx = q.x; ry = q.y;
+    }else if(kind === 'flip'){
+      q.f = -q.f;
+    }else if(kind === 'remove'){
+      q.gone = true;
+    }
+    /* 判定半径跟元素大小走，但有下限 —— 孩子手指戳不准，热区太小会一直点错 */
+    spots.push({ lx:lx, ly:ly, rx:rx, ry:ry, r:Math.max(40, 30 * p.s), found:false, anim:0 });
+  }
+
+  Spot.L = L; Spot.R = R; Spot.spots = spots;
+  Spot.found = 0; Spot.misses = 0;
+  Spot.lives = c.lives; Spot.maxLives = c.lives;
+  Spot.el = 0; Spot.left = c.time; Spot.timeLimit = c.time;
+  Spot.over = false;
+  Spot.wrongT = 0;
+  Game.score = c.base;
+  Game.banner = 90;
+}
+
+/* 实时分数：找齐了才给剩余机会奖励，没找齐不给 */
+function spotScore(){
+  var c = spotCfg();
+  var timePen = Math.floor(Spot.el / 60 * 4);
+  var missPen = Spot.misses * 60;
+  var bonus = (Spot.spots.length && Spot.found >= Spot.spots.length) ? Spot.lives * 150 : 0;
+  return Math.max(50, Math.floor(c.base + Spot.found * 120 + bonus - timePen - missPen));
+}
+
+function spotWin(){
+  if(Spot.over) return;
+  Spot.over = true;
+  endGame(spotScore(), '用时 ' + Math.round(Spot.el / 60) + ' 秒 · 点错 ' + Spot.misses + ' 次');
+}
+function spotLose(why){
+  if(Spot.over) return;
+  Spot.over = true;
+  endGame(spotScore(), why + ' · 找到 ' + Spot.found + ' / ' + Spot.spots.length);
+}
+
+function spotTap(x, y){
+  if(Spot.over) return;
+  var p0 = spotPanel(0), p1 = spotPanel(1);
+  var isL = hitRect(x, y, p0), isR = hitRect(x, y, p1);
+  if(!isL && !isR) return;
+
+  var lx = x - p0.x, ly = y - p0.y;
+  var rx = x - p1.x, ry = y - p1.y;
+  for(var i = 0; i < Spot.spots.length; i++){
+    var s = Spot.spots[i];
+    if(s.found) continue;
+    var d2, hit = false;
+    if(isL){ d2 = (lx - s.lx) * (lx - s.lx) + (ly - s.ly) * (ly - s.ly); if(d2 <= s.r * s.r) hit = true; }
+    if(!hit && isR){ d2 = (rx - s.rx) * (rx - s.rx) + (ry - s.ry) * (ry - s.ry); if(d2 <= s.r * s.r) hit = true; }
+    if(hit){
+      s.found = true; s.anim = 0.01;
+      Spot.found++;
+      Audio2.good(Spot.found);
+      if(Spot.found >= Spot.spots.length) spotWin();
+      return;
+    }
+  }
+  Spot.misses++; Spot.lives--;
+  Spot.wrongT = 42; Spot.wrongX = x; Spot.wrongY = y;
+  Audio2.bad();
+  if(Spot.lives <= 0) spotLose('机会用完');
+}
+
+function updateSpot(dt){
+  if(Spot.over) return;
+  Spot.el += dt;
+  if(Spot.wrongT > 0) Spot.wrongT -= dt;
+  for(var i = 0; i < Spot.spots.length; i++){
+    var s = Spot.spots[i];
+    if(s.found && s.anim < 1) s.anim = Math.min(1, s.anim + 0.085 * dt);
+  }
+  var c = spotCfg();
+  if(c.time > 0){
+    Spot.left = Math.max(0, Spot.left - dt / 60);
+    if(Spot.left <= 0){ spotLose('时间到'); return; }
+  }
+  Game.score = spotScore();
+}
+
+/* ---------- 绘制 ---------- */
+var SPOT_INSET = 3;
+function drawSpotPanelBg(r){
+  /* 先铺满整块：只画圆角矩形的话，四个角会露出底下 drawBackdrop 里飘动的云，
+     两幅图的边缘一直在抖 —— 这类「比两幅图」的游戏里等于画面在动，没法比。
+     铺满之后再把圆角画面画在里面，外圈就成了一道白色相框边。 */
+  ctx.fillStyle = 'rgba(255,255,255,.92)';
+  ctx.fillRect(r.x, r.y, r.w, r.h);
+
+  var i = SPOT_INSET;
+  var g = ctx.createLinearGradient(0, r.y, 0, r.y + r.h);
+  g.addColorStop(0, '#bfe3f5');
+  g.addColorStop(0.55, '#dff0f8');
+  g.addColorStop(0.56, '#a8d98a');
+  g.addColorStop(1, '#7cc46a');
+  ctx.fillStyle = g;
+  roundRect(r.x + i, r.y + i, r.w - i * 2, r.h - i * 2, 12); ctx.fill();
+  /* 太阳画在背景里（两幅图一样），云飘过去也好看 */
+  ctx.fillStyle = 'rgba(255,226,120,.92)';
+  ctx.beginPath(); ctx.arc(r.x + r.w - 58, r.y + 46, 21, 0, 6.2832); ctx.fill();
+  ctx.strokeStyle = 'rgba(90,120,100,.40)'; ctx.lineWidth = 2;
+  roundRect(r.x + i, r.y + i, r.w - i * 2, r.h - i * 2, 12); ctx.stroke();
+}
+
+function drawSpotScene(list, panel){
+  drawSpotPanelBg(panel);
+  var i = SPOT_INSET;
+  ctx.save();
+  ctx.beginPath();
+  roundRect(panel.x + i, panel.y + i, panel.w - i * 2, panel.h - i * 2, 12);
+  ctx.clip();
+  for(var k = 0; k < list.length; k++) drawSpotProp(list[k], panel.x, panel.y);
+  ctx.restore();
+}
+
+function drawSpotMark(panel, hx, hy, r, anim){
+  /* 弹一下再定住：0→1 用 easeOutBack，孩子能看清「找到了」在哪 */
+  var t = anim;
+  var sc = 1 + 2.2 * Math.pow(1 - t, 3) * Math.sin(t * 9);
+  var a = clamp(t * 1.6, 0, 1);
+  ctx.save();
+  ctx.translate(panel.x + hx, panel.y + hy);
+  ctx.scale(sc, sc);
+  ctx.globalAlpha = a;
+  ctx.strokeStyle = '#2f7a46'; ctx.lineWidth = 4; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.stroke();
+  ctx.strokeStyle = '#4caf6d'; ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(-r * 0.34, 0); ctx.lineTo(-r * 0.06, r * 0.30); ctx.lineTo(r * 0.38, -r * 0.30);
+  ctx.stroke();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function drawSpotWrong(){
+  var a = clamp(Spot.wrongT / 42, 0, 1);
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.strokeStyle = '#e8524f'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  var d = 15;
+  ctx.beginPath();
+  ctx.moveTo(Spot.wrongX - d, Spot.wrongY - d); ctx.lineTo(Spot.wrongX + d, Spot.wrongY + d);
+  ctx.moveTo(Spot.wrongX + d, Spot.wrongY - d); ctx.lineTo(Spot.wrongX - d, Spot.wrongY + d);
+  ctx.stroke();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function drawSpot(){
+  drawBackdrop(Game.time * 60, 0);
+  var p0 = spotPanel(0), p1 = spotPanel(1);
+  drawSpotScene(Spot.L, p0);
+  drawSpotScene(Spot.R, p1);
+
+  for(var i = 0; i < Spot.spots.length; i++){
+    var s = Spot.spots[i];
+    if(!s.found) continue;
+    drawSpotMark(p0, s.lx, s.ly, s.r, s.anim);
+    drawSpotMark(p1, s.rx, s.ry, s.r, s.anim);
+  }
+  if(Spot.wrongT > 0) drawSpotWrong();
+
+  drawTopBar('找不同');
+  drawHearts(Spot.lives, Spot.maxLives);
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.fillStyle = 'rgba(31,77,46,.75)';
+  ctx.font = '500 15px system-ui,sans-serif';
+  ctx.fillText('找到 ' + Spot.found + ' / ' + Spot.spots.length, W / 2, 66);
+
+  if(Spot.timeLimit > 0){
+    var low = Spot.left <= 15;
+    ctx.fillStyle = low ? '#d33' : 'rgba(31,77,46,.82)';
+    ctx.font = '500 ' + (low ? 22 : 19) + 'px system-ui,sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(Math.ceil(Spot.left) + ' 秒', 24, 66);
+  }
+}
+
+/* ---------- 注册到 GAMES ---------- */
+(function(){
+  for(var i = 0; i < GAMES.length; i++){
+    if(GAMES[i].id !== 'spot') continue;
+    GAMES[i].start  = startSpot;
+    GAMES[i].update = updateSpot;
+    GAMES[i].draw   = drawSpot;
+    GAMES[i].tap    = spotTap;
+    GAMES[i].banner = '找出两幅图不一样的地方，左右两边都能点';
+  }
+})();
+
+/* 把内部对象暴露给测试脚本。p4 在启动时会把 __fsmExtras 并进 window.__fsm，
+   所以加新游戏不用再去改 p4 的 __fsm 字面量。 */
+window.__fsmExtras = {
+  Spot:Spot, spotPanel:spotPanel, spotCfg:spotCfg, spotScore:spotScore
+};
+
+
+/* ============================================================
  * 11. 输入
  * ------------------------------------------------------------
  * 所有游戏相关的分支都走查表（curGame()），这里只管「输入 → 分发」。
@@ -1379,6 +1808,13 @@ window.__fsm = {
   openRunner:openRunner,
   _step:stepMap
 };
+
+/* 游戏片段（src/g-*.html）在主循环之前执行，没法直接往上面的 __fsm 字面量里加东西
+   —— 那一刻它还不存在。所以它们把内部对象挂到 window.__fsmExtras，
+   在这里统一并进来，供测试脚本访问。加新游戏不用再改上面那个字面量。 */
+if(window.__fsmExtras){
+  for(var xk in window.__fsmExtras) window.__fsm[xk] = window.__fsmExtras[xk];
+}
 
 resize();
 requestAnimationFrame(loop);

@@ -175,6 +175,13 @@ window.__fsm = {
   _step:stepMap
 };
 
+/* 游戏片段（src/g-*.html）在主循环之前执行，没法直接往上面的 __fsm 字面量里加东西
+   —— 那一刻它还不存在。所以它们把内部对象挂到 window.__fsmExtras，
+   在这里统一并进来，供测试脚本访问。加新游戏不用再改上面那个字面量。 */
+if(window.__fsmExtras){
+  for(var xk in window.__fsmExtras) window.__fsm[xk] = window.__fsmExtras[xk];
+}
+
 resize();
 requestAnimationFrame(loop);
 
