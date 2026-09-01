@@ -34,6 +34,80 @@ const getOpts = (page) => page.evaluate(() => {
   return f.optsList(f.curGame()).map((_, i) => f.diffRect(i));
 });
 
+/* 快照 / 比对一块区域的像素。
+   用来验证「找到了」的标记真的画出来了 —— 只查状态位会漏掉「数据对了但没画出来」。
+   不能简单地「数绿色像素」：草地本身就是绿的，基线 13170/14400，
+   一个细描边的圈只多出 71 个，根本区分不出来。所以改成前后快照差分。 */
+async function snapRegion(page, x, y, w, h) {
+  await page.evaluate(([x, y, w, h]) => {
+    const cv = document.getElementById('game');
+    const sx = cv.width / 960, sy = cv.height / 540;
+    const c = cv.getContext('2d');
+    const d = c.getImageData(Math.round(x * sx), Math.round(y * sy),
+      Math.max(1, Math.round(w * sx)), Math.max(1, Math.round(h * sy)));
+    window.__snap = { w: d.width, h: d.height, data: new Uint8ClampedArray(d.data) };
+  }, [x, y, w, h]);
+}
+/* 返回 {changed, green}：变化像素数，以及其中属于「中深色绿」的数量
+   （标记描边 #2f7a46 / #4caf6d；草地的 g 都在 196 以上，被阈值排掉）。 */
+async function diffSnap(page, x, y, w, h) {
+  return await page.evaluate(([x, y, w, h]) => {
+    const cv = document.getElementById('game');
+    const sx = cv.width / 960, sy = cv.height / 540;
+    const c = cv.getContext('2d');
+    const cur = c.getImageData(Math.round(x * sx), Math.round(y * sy),
+      Math.max(1, Math.round(w * sx)), Math.max(1, Math.round(h * sy))).data;
+    const old = window.__snap;
+    if (!old || old.data.length !== cur.length) return { changed: -1, green: -1 };
+    let changed = 0, green = 0;
+    for (let i = 0; i < cur.length; i += 4) {
+      const dr = Math.abs(cur[i] - old.data[i]);
+      const dg = Math.abs(cur[i + 1] - old.data[i + 1]);
+      const db = Math.abs(cur[i + 2] - old.data[i + 2]);
+      if (dr + dg + db < 40) continue;
+      changed++;
+      const g = cur[i + 1], r = cur[i], b = cur[i + 2];
+      if (g > 85 && g < 185 && g > r + 30 && g > b + 25) green++;
+    }
+    return { changed, green };
+  }, [x, y, w, h]);
+}
+
+/* 比对找不同的左右两幅图，返回「明显不同」的分块数。
+   44 万像素搬到 Node 里比对会慢到不能用，所以整段比对在浏览器内完成。 */
+async function panelDiffBlocks(page, blockPx, thresh) {
+  return await page.evaluate(([bp, th]) => {
+    const f = window.__fsm;
+    const p0 = f.spotPanel(0), p1 = f.spotPanel(1);
+    const cv = document.getElementById('game');
+    const sx = cv.width / 960, sy = cv.height / 540;
+    const c = cv.getContext('2d');
+    const w = Math.round(p0.w * sx), h = Math.round(p0.h * sy);
+    const A = c.getImageData(Math.round(p0.x * sx), Math.round(p0.y * sy), w, h);
+    const B = c.getImageData(Math.round(p1.x * sx), Math.round(p1.y * sy), w, h);
+    const gw = Math.floor(p0.w / bp), gh = Math.floor(p0.h / bp);
+    let hits = 0;
+    for (let by = 0; by < gh; by++) {
+      for (let bx = 0; bx < gw; bx++) {
+        let sum = 0, n = 0;
+        for (let yy = 0; yy < bp * sy; yy += 2) {
+          for (let xx = 0; xx < bp * sx; xx += 2) {
+            const px = Math.round(bx * bp * sx + xx), py = Math.round(by * bp * sy + yy);
+            if (px >= w || py >= h) continue;
+            const i = (py * w + px) * 4;
+            sum += Math.abs(A.data[i] - B.data[i]) +
+                   Math.abs(A.data[i + 1] - B.data[i + 1]) +
+                   Math.abs(A.data[i + 2] - B.data[i + 2]);
+            n++;
+          }
+        }
+        if (n && sum / n > th) hits++;
+      }
+    }
+    return hits;
+  }, [blockPx, thresh]);
+}
+
 async function sample(page, x, y, w, h) {
   return await page.evaluate(([x, y, w, h]) => {
     const cv = document.getElementById('game');
@@ -67,10 +141,11 @@ async function sample(page, x, y, w, h) {
   await page.waitForFunction('window.__fsm && window.__fsm.Game', { timeout: 20000 });
   await wait(1200);
 
-  /* 菜单里「接橡果」是卡片 0、「记忆翻牌」是卡片 1。
-     松鼠冲刺（dash）已在本次改版中删除 —— 玩法和《放学跑酷》重复。 */
+  /* 卡片顺序从 GAMES 里查，不写死下标 —— 加删游戏时测试不用跟着改。
+     松鼠冲刺（dash）已删除（玩法和《放学跑酷》重复），找不同（spot）是新加的第三个。 */
   const IDX_ACORN = await page.evaluate(() => window.__fsm.GAMES.findIndex(g => g.id === 'acorn'));
   const IDX_MEM = await page.evaluate(() => window.__fsm.GAMES.findIndex(g => g.id === 'memory'));
+  const IDX_SPOT = await page.evaluate(() => window.__fsm.GAMES.findIndex(g => g.id === 'spot'));
 
   /* ---- T1 加载无错误 ---- */
   rec('T1', '页面加载零运行时错误', errs.length === 0 && warns.length === 0,
@@ -94,7 +169,7 @@ async function sample(page, x, y, w, h) {
     if (s.colors < 4) cardOk = false;
   }
   const bgS = await sample(page, 20, 500, 60, 30);
-  rec('T3', '菜单所有游戏卡片已渲染', cardOk && cardRects.length === 2,
+  rec('T3', '菜单所有游戏卡片已渲染', cardOk && cardRects.length === 3,
     cardDetail.join(' ') + ` (空白对照 colors=${bgS.colors})  卡片数=${cardRects.length}`);
 
   /* ---- T4 难度按钮：点击切换 ----
@@ -424,6 +499,133 @@ async function sample(page, x, y, w, h) {
     gRect.map(r => `[${Math.round(r.x)}~${Math.round(r.x + r.w)}]`).join(' ') + `  点第4个 -> ${st34}`);
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
   await wait(400);
+
+  /* ================= 找不同（第三个游戏） ================= */
+  const enterSpot = async (diff) => {
+    await page.evaluate(d => {
+      const f = window.__fsm;
+      f.Game.state = 'menu';
+      f.selectGame('spot');
+      f.selectDiff(d);
+      f.startCurrent();
+    }, diff);
+    await wait(700);
+  };
+
+  /* ---- T35 找不同：卡片存在且能开局 ---- */
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
+  await wait(300);
+  const cards35 = await getCards(page);
+  await clickAt(page, ...center(cards35[IDX_SPOT]));
+  await wait(700);
+  const st35 = await page.evaluate(() => ({
+    s: window.__fsm.Game.state, g: window.__fsm.Game.gameId,
+    props: window.__fsm.Spot.L.length, spots: window.__fsm.Spot.spots.length
+  }));
+  rec('T35', '找不同：卡片可点且能开局', st35.s === 'play' && st35.g === 'spot' && st35.spots > 0,
+    `state=${st35.s} gameId=${st35.g} 场景元素=${st35.props} 差异点=${st35.spots}`);
+
+  /* ---- T36 找不同：三档难度的差异数递增，且左右场景数据真的有那么多处不同 ----
+     只数 hotspots 的数量会漏掉「标了但没改」——所以同时比对左右两份场景数据。 */
+  const spotByDiff = {};
+  for (const d of ['easy', 'normal', 'hard']) {
+    await enterSpot(d);
+    spotByDiff[d] = await page.evaluate(() => {
+      const S = window.__fsm.Spot, cfg = window.__fsm.spotCfg();
+      let real = 0;
+      for (let i = 0; i < S.L.length; i++) {
+        const a = S.L[i], b = S.R[i];
+        if (a.t !== b.t || a.c !== b.c || a.f !== b.f || a.gone !== b.gone ||
+            Math.abs(a.x - b.x) > 1 || Math.abs(a.y - b.y) > 1 || Math.abs(a.s - b.s) > 0.01) real++;
+      }
+      return { want: cfg.diffs, spots: S.spots.length, real: real, lives: S.lives, time: cfg.time };
+    });
+  }
+  const e36 = spotByDiff.easy, n36 = spotByDiff.normal, h36 = spotByDiff.hard;
+  rec('T36', '找不同：三档差异数递增且左右场景真的不同',
+    e36.want === 3 && n36.want === 5 && h36.want === 7 &&
+    e36.spots === e36.real && n36.spots === n36.real && h36.spots === h36.real,
+    `简单 ${e36.spots}处(数据${e36.real}) / 普通 ${n36.spots}处(数据${n36.real}) / 困难 ${h36.spots}处(数据${h36.real})`);
+
+  /* ---- T37 找不同：差异真的渲染出来了（左右面板像素分块比对） ----
+     数据模型里有差异 ≠ 画面上有差异。把两幅图按 12px 分块比对，
+     差异块数必须 ≥ 差异处数 —— 否则就是画漏了，或者差异做得太小看不见。 */
+  const blockByDiff = {};
+  for (const d of ['easy', 'normal', 'hard']) {
+    await enterSpot(d);
+    blockByDiff[d] = await panelDiffBlocks(page, 12, 30);
+  }
+  rec('T37', '找不同：差异在画面上真的看得见（像素比对）',
+    blockByDiff.easy >= 3 && blockByDiff.normal >= 5 && blockByDiff.hard >= 7,
+    `差异块数 简单${blockByDiff.easy}(需≥3) 普通${blockByDiff.normal}(需≥5) 困难${blockByDiff.hard}(需≥7)`);
+
+  /* ---- T38 找不同：点对加分 + 绿色对勾标记真的画出来 ---- */
+  await enterSpot('normal');
+  const before38 = await page.evaluate(() => ({ s: window.__fsm.Game.score, f: window.__fsm.Spot.found }));
+  const hit38 = await page.evaluate(() => {
+    const f = window.__fsm, S = f.Spot, p0 = f.spotPanel(0);
+    const s = S.spots[0];
+    return { x: p0.x + s.lx, y: p0.y + s.ly, r: s.r };
+  });
+  await snapRegion(page, hit38.x - hit38.r, hit38.y - hit38.r, hit38.r * 2, hit38.r * 2);
+  await clickAt(page, hit38.x, hit38.y);
+  await wait(900);
+  const after38 = await page.evaluate(() => ({ s: window.__fsm.Game.score, f: window.__fsm.Spot.found }));
+  const d38 = await diffSnap(page, hit38.x - hit38.r, hit38.y - hit38.r, hit38.r * 2, hit38.r * 2);
+  rec('T38', '找不同：点对加分并画出「找到了」标记',
+    after38.f === before38.f + 1 && after38.s > before38.s && d38.changed > 300 && d38.green > 200,
+    `找到 ${before38.f}->${after38.f}  分数 ${before38.s}->${after38.s}  ` +
+    `热区内变化像素 ${d38.changed}（其中中深绿 ${d38.green}）`);
+
+  /* ---- T39 找不同：点错扣机会，机会耗尽进结算 ---- */
+  await enterSpot('easy');
+  const lives39 = await page.evaluate(() => window.__fsm.Spot.lives);
+  const p0Rect = await page.evaluate(() => window.__fsm.spotPanel(0));
+  for (let i = 0; i < lives39; i++) {
+    await clickAt(page, p0Rect.x + 6, p0Rect.y + 6);   // 左上角，必然点错
+    await wait(160);
+  }
+  await wait(600);
+  const st39 = await page.evaluate(() => ({ s: window.__fsm.Game.state, lives: window.__fsm.Spot.lives, m: window.__fsm.Spot.misses }));
+  rec('T39', '找不同：连点空白处耗尽机会并进结算',
+    st39.s === 'result' && st39.lives <= 0 && st39.m === lives39,
+    `点错 ${st39.m} 次（机会 ${lives39}）-> state=${st39.s} lives=${st39.lives}`);
+
+  /* ---- T40 找不同：全部找齐进结算，分数高于基数 ---- */
+  await enterSpot('easy');
+  const base40 = await page.evaluate(() => window.__fsm.spotCfg().base);
+  await page.evaluate(async () => {
+    const f = window.__fsm, S = f.Spot, p0 = f.spotPanel(0);
+    for (let i = 0; i < S.spots.length; i++) {
+      const s = S.spots[i];
+      f.curGame().tap(p0.x + s.lx, p0.y + s.ly);
+      await new Promise(r => setTimeout(r, 150));
+    }
+  });
+  await wait(700);
+  const st40 = await page.evaluate(() => ({ s: window.__fsm.Game.state, sc: window.__fsm.Game.score, f: window.__fsm.Spot.found }));
+  rec('T40', '找不同：全部找齐进结算且分数高于基数',
+    st40.s === 'result' && st40.f === 3 && st40.sc > base40,
+    `state=${st40.s} 找到 ${st40.f}/3  score=${st40.sc}（基数 ${base40}）`);
+
+  /* ---- T41 找不同：困难档限时，倒计时真的在走（且按秒不按帧） ---- */
+  await enterSpot('hard');
+  const t0 = await page.evaluate(() => window.__fsm.Spot.left);
+  await wait(2000);
+  const t1 = await page.evaluate(() => window.__fsm.Spot.left);
+  const drop = t0 - t1;
+  rec('T41', '找不同：困难档倒计时按秒递减（不是按帧乱跳）', drop > 1.4 && drop < 2.9,
+    `2 秒内 ${t0.toFixed(2)}s -> ${t1.toFixed(2)}s，掉了 ${drop.toFixed(2)}s（应接近 2）`);
+
+  /* ---- T42 找不同：点右图也能命中（两边都该能点） ---- */
+  await enterSpot('easy');
+  const r42 = await page.evaluate(() => {
+    const f = window.__fsm, S = f.Spot, p1 = f.spotPanel(1);
+    const s = S.spots[0];
+    f.curGame().tap(p1.x + s.rx, p1.y + s.ry);
+    return S.found;
+  });
+  rec('T42', '找不同：点右图的差异位置也能命中', r42 === 1, `点右图后 found=${r42}`);
 
   /* ---- T28 记忆翻牌：单张翻开后动画完成仍可见，不被压成细线 ----
      修复前 bug：ctx.scale 用了 cos(flip*π/2)，flip=1 时 sq=0，

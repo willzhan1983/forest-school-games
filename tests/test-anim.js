@@ -28,6 +28,37 @@ async function sample(page, x, y, w, h) {
   }, [x, y, w, h]);
 }
 
+/* 区域快照 / 差分。与 test.js 里同一套：
+   找不同的场景是静止的（两幅图不能自己动，否则没法比），
+   所以「有没有变化」只能靠前后两次取像素来比。 */
+async function snapRegion(page, x, y, w, h) {
+  await page.evaluate(([x, y, w, h]) => {
+    const cv = document.getElementById('game');
+    const sx = cv.width / 960, sy = cv.height / 540;
+    const c = cv.getContext('2d');
+    const d = c.getImageData(Math.round(x * sx), Math.round(y * sy),
+      Math.max(1, Math.round(w * sx)), Math.max(1, Math.round(h * sy)));
+    window.__snap = { w: d.width, h: d.height, data: new Uint8ClampedArray(d.data) };
+  }, [x, y, w, h]);
+}
+async function diffSnap(page, x, y, w, h) {
+  return await page.evaluate(([x, y, w, h]) => {
+    const cv = document.getElementById('game');
+    const sx = cv.width / 960, sy = cv.height / 540;
+    const c = cv.getContext('2d');
+    const cur = c.getImageData(Math.round(x * sx), Math.round(y * sy),
+      Math.max(1, Math.round(w * sx)), Math.max(1, Math.round(h * sy))).data;
+    const old = window.__snap;
+    if (!old || old.data.length !== cur.length) return -1;
+    let n = 0;
+    for (let i = 0; i < cur.length; i += 4) {
+      if (Math.abs(cur[i] - old.data[i]) + Math.abs(cur[i + 1] - old.data[i + 1]) +
+          Math.abs(cur[i + 2] - old.data[i + 2]) >= 40) n++;
+    }
+    return n;
+  }, [x, y, w, h]);
+}
+
 (async () => {
   const browser = await puppeteer.launch({
     executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -177,6 +208,65 @@ async function sample(page, x, y, w, h) {
   const pairMatched = await page.evaluate(() => window.__fsm.Mem.matched);
   rec('A7', '6×4 棋盘：配对成功的卡片保持可见', pairMatched === 2 && pairS.colors > 6 && pairS.lum > 100,
     `matched=${pairMatched} colors=${pairS.colors} lum=${pairS.lum}`);
+
+  /* ---------- A10 找不同：「找到了」标记的出现与收敛 ----------
+     标记用 easeOutBack 弹一下再定住。逐帧追踪热区内的变化像素数：
+     必须从 0 涨起来（画出来了），并且最后收敛（不能一直抖）。 */
+  await page.evaluate(() => {
+    const f = window.__fsm;
+    f.Game.state = 'menu';
+    f.selectGame('spot');
+    f.selectDiff('normal');
+    f.startCurrent();
+  });
+  await wait(700);
+  const spot0 = await page.evaluate(() => {
+    const f = window.__fsm, S = f.Spot, p0 = f.spotPanel(0);
+    const s = S.spots[0];
+    return { x: p0.x + s.lx, y: p0.y + s.ly, r: s.r };
+  });
+  const box = [spot0.x - spot0.r, spot0.y - spot0.r, spot0.r * 2, spot0.r * 2];
+  await snapRegion(page, ...box);
+  await page.evaluate(([x, y]) => window.__fsm.curGame().tap(x, y), [spot0.x, spot0.y]);
+  const markTrace = [];
+  for (let i = 0; i < 14; i++) {
+    markTrace.push(await diffSnap(page, ...box));
+    await wait(65);
+  }
+  const markMax = Math.max.apply(null, markTrace);
+  const tail = markTrace.slice(-3);
+  const tailSpread = Math.max.apply(null, tail) - Math.min.apply(null, tail);
+  rec('A10', '找不同：「找到了」标记画出来并收敛（不一直抖）',
+    markMax > 300 && tailSpread < 120,
+    '变化像素序列=' + markTrace.join(' ') + ` 峰值=${markMax} 末3帧波动=${tailSpread}`);
+
+  /* ---------- A11 找不同的场景必须静止 ----------
+     两幅图如果跟着 Game.time 动（哪怕只是轻微抖动），孩子就没法比了 ——
+     这是这类游戏最容易犯的错：复用了一个带动画的背景绘制函数。 */
+  await page.evaluate(() => {
+    const f = window.__fsm;
+    f.Game.state = 'menu';
+    f.selectGame('spot');
+    f.selectDiff('normal');
+    f.startCurrent();
+  });
+  await wait(700);
+  /* 开场提示横幅盖在两幅图上（y 122~166，图从 y 92 开始），
+     它淡出的那 1.5 秒里画面当然在变。等它归零再测，不然测的是横幅不是场景。 */
+  await page.waitForFunction('window.__fsm.Game.banner === 0', { timeout: 8000 });
+  await wait(200);
+  const p0r = await page.evaluate(() => window.__fsm.spotPanel(0));
+  const p1r = await page.evaluate(() => window.__fsm.spotPanel(1));
+  const panelPx = Math.round(p0r.w * 1.5) * Math.round(p0r.h * 1.5);
+  await snapRegion(page, p0r.x, p0r.y, p0r.w, p0r.h);
+  await wait(1200);
+  const driftL = await diffSnap(page, p0r.x, p0r.y, p0r.w, p0r.h);
+  await snapRegion(page, p1r.x, p1r.y, p1r.w, p1r.h);
+  await wait(1200);
+  const driftR = await diffSnap(page, p1r.x, p1r.y, p1r.w, p1r.h);
+  rec('A11', '找不同的两幅场景保持静止（1.2 秒内零漂移）',
+    driftL === 0 && driftR === 0,
+    `左图漂移像素=${driftL}  右图漂移像素=${driftR}（每幅 ${p0r.w}×${p0r.h} ≈ ${panelPx} 物理像素）`);
 
   /* ---------- A8 开场横幅动画结束 ---------- */
   await enter('acorn');

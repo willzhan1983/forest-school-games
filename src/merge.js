@@ -1,12 +1,18 @@
 /*
- * 构建脚本：把四个源片段合并成单文件 index.html
+ * 构建脚本：把源片段合并成单文件 index.html
  *
  *   node src/merge.js
  *
  * 输出：仓库根目录 index.html
- * 依赖：src/p1~p4.html（源片段）、src/cat.b64.txt、src/owl.b64.txt（立绘 base64）
+ * 依赖：src/p1~p3.html（框架）、src/g-*.html（各小游戏）、src/p4.html（输入与主循环，必须最后）
+ *       src/cat.b64.txt、src/owl.b64.txt（立绘 base64）
  *
- * 注意：index.html 是构建产物，不要直接编辑它。要改就改 src/pN.html，然后跑本脚本。
+ * 片段顺序见下面的 PARTS：p* 是框架，g-* 是每个小游戏。
+ * p4 里有 IIFE 收尾和 </script></body></html>，所以必须排在最后。
+ *
+ * 加新小游戏：新建 src/g-<id>.html，往 PARTS 里插一行（放在 p3 之后、p4 之前）。
+ *
+ * 注意：index.html 是构建产物，不要直接编辑它。要改就改 src/ 下的片段，然后跑本脚本。
  */
 const fs = require('fs');
 const path = require('path');
@@ -25,7 +31,10 @@ function readB64(name) {
 const cat = readB64('cat.b64.txt');
 const owl = readB64('owl.b64.txt');
 
-const parts = ['p1', 'p2', 'p3', 'p4'].map(function (n) {
+/* 拼接顺序。p4 必须最后（含 IIFE 收尾 + 关闭标签）。 */
+const PARTS = ['p1', 'p2', 'p3', 'g-spot', 'p4'];
+
+const parts = PARTS.map(function (n) {
   const f = path.join(SRC, n + '.html');
   if (!fs.existsSync(f)) throw new Error('缺少源片段: ' + f);
   return fs.readFileSync(f, 'utf8');
