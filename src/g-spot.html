@@ -20,7 +20,10 @@ function spotPanel(i){ return { x: 24 + i * (SPOT_W + 24), y: SPOT_TOP, w: SPOT_
 
 /* 难度：差异数 / 场景元素数 / 点错机会 / 限时（秒，0=不限）/ 计分基数 */
 var SPOT_CFG = {
-  easy:   { diffs:3, props:9,  lives:5, time:0,  base:900,  kinds:['color','size'] },
+  /* easy 原本只有 color / size 两种，9 个景物里找 3 处，
+     不是"变红了"就是"变小了"，玩两局就腻。加上 move 之后变化方式多一种，
+     仍然是最好认的三种，没有 remove（凭空少一个对小朋友最不好找）。 */
+  easy:   { diffs:3, props:9,  lives:5, time:0,  base:900,  kinds:['color','size','move'] },
   normal: { diffs:5, props:14, lives:4, time:0,  base:1300, kinds:['color','size','remove','move'] },
   hard:   { diffs:7, props:18, lives:3, time:75, base:1700, kinds:['color','size','remove','move','flip'] }
 };
@@ -392,7 +395,7 @@ function drawSpot(){
   drawTopBar('找不同');
   drawHearts(Spot.lives, Spot.maxLives);
 
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(31,77,46,.75)';
   ctx.font = '500 15px system-ui,sans-serif';
   ctx.fillText('找到 ' + Spot.found + ' / ' + Spot.spots.length, W / 2, 66);
@@ -401,8 +404,8 @@ function drawSpot(){
     var low = Spot.left <= 15;
     ctx.fillStyle = low ? '#d33' : 'rgba(31,77,46,.82)';
     ctx.font = '500 ' + (low ? 22 : 19) + 'px system-ui,sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(Math.ceil(Spot.left) + ' 秒', 24, 66);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(Math.ceil(Spot.left) + ' 秒', 24, 92);
   }
 }
 

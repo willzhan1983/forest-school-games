@@ -5,7 +5,9 @@
  * 所有游戏相关的分支都走查表（curGame()），这里只管「输入 → 分发」。
  * 新增小游戏不用改本文件的任何 if/else。
  * ========================================================== */
-var Input = { keys:{}, pointX:null, down:false, startY:0, touch:false };
+/* mx / my 是鼠标在画布里的逻辑坐标，给 hoverRect() 做悬停反馈用。
+   触屏不更新这两个值 —— 手指离屏后不该留下「鼠标还停在这儿」的假象。 */
+var Input = { keys:{}, pointX:null, down:false, startY:0, touch:false, mx:null, my:null };
 
 function toLogic(cx, cy){
   var r = canvas.getBoundingClientRect();
@@ -53,9 +55,11 @@ canvas.addEventListener('pointerdown', function(e){
   if(e.pointerType && e.pointerType !== 'mouse') Input.touch = true;
   try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
 
+  /* 按钮命中一律走 padRect()：手机上把热区撑到 44 CSS 像素。
+     卡片和牌本身已经够大，不扩 —— 扩了会让相邻热区重叠，点错牌。 */
   if(Game.state === 'menu'){
-    if(hitRect(p.x, p.y, musicRect())){ Audio2.toggleMusic(); return; }
-    if(hitRect(p.x, p.y, linkRect())){ Audio2.click(); openRunner(); return; }
+    if(hitRect(p.x, p.y, padRect(musicRect()))){ Audio2.toggleMusic(); return; }
+    if(hitRect(p.x, p.y, padRect(linkRect()))){ Audio2.click(); openRunner(); return; }
     for(var i = 0; i < GAMES.length; i++){
       if(hitRect(p.x, p.y, cardRect(i))){
         selectGame(GAMES[i].id); Audio2.click();
@@ -64,18 +68,17 @@ canvas.addEventListener('pointerdown', function(e){
     }
     var opts = optsList(curGame());
     for(var d = 0; d < opts.length; d++){
-      if(hitRect(p.x, p.y, diffRect(d))){
+      if(hitRect(p.x, p.y, padRect(diffRect(d)))){
         selectDiff(opts[d].id); Audio2.click(); return;
       }
     }
   }else if(Game.state === 'result'){
-    if(hitRect(p.x, p.y, musicRect())){ Audio2.toggleMusic(); return; }
-    if(hitRect(p.x, p.y, againRect())){ Audio2.click(); startCurrent(); return; }
-    if(hitRect(p.x, p.y, homeRect())){ Audio2.click(); Game.state = 'menu'; return; }
+    if(hitRect(p.x, p.y, padRect(musicRect()))){ Audio2.toggleMusic(); return; }
+    if(hitRect(p.x, p.y, padRect(againRect()))){ Audio2.click(); startCurrent(); return; }
+    if(hitRect(p.x, p.y, padRect(homeRect()))){ Audio2.click(); Game.state = 'menu'; return; }
   }else{
-    if(hitRect(p.x, p.y, musicRect())){ Audio2.toggleMusic(); return; }
-    var b = backRect(); b.x = 80;
-    if(hitRect(p.x, p.y, b)){ Audio2.click(); Game.state = 'menu'; return; }
+    if(hitRect(p.x, p.y, padRect(musicRect()))){ Audio2.toggleMusic(); return; }
+    if(hitRect(p.x, p.y, padRect(backRect()))){ Audio2.click(); Game.state = 'menu'; return; }
 
     /* 游戏内点击：交给该游戏自己的 tap 处理（在 p3 的注册表里挂上） */
     var gt = curGame();
@@ -85,6 +88,7 @@ canvas.addEventListener('pointerdown', function(e){
 
 canvas.addEventListener('pointermove', function(e){
   if(e.pointerType && e.pointerType !== 'mouse') Input.touch = true;
+  else { var pm = toLogic(e.clientX, e.clientY); Input.mx = pm.x; Input.my = pm.y; }
   /* 只有需要拖动的游戏（接橡果）才跟手指，翻牌跟手会误翻 */
   if(Game.state !== 'play' || !curGame().drag) return;
   var p = toLogic(e.clientX, e.clientY);
@@ -118,11 +122,13 @@ function drawBanner(){
   var a = clamp(Game.banner / 30, 0, 1);
   ctx.globalAlpha = a;
   ctx.fillStyle = 'rgba(20,40,30,.72)';
-  roundRect(W/2 - 300, 122, 600, 44, 22); ctx.fill();
+  roundRect(W/2 - 300, 116, 600, 54, 26); ctx.fill();
+  /* 15px 在手机上只剩 6px，等于没写。开口提示是告诉孩子怎么玩的，
+     必须看得清，所以放大到 20px 并加粗。 */
   ctx.fillStyle = '#fff';
-  ctx.font = '400 15px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
-  ctx.fillText(bannerText(), W/2, 144);
+  ctx.font = '500 20px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(bannerText(), W/2, 143);
   ctx.globalAlpha = 1;
 }
 
@@ -144,6 +150,7 @@ function loop(ts){
     if(gu.update) gu.update(dtF);
   }
 
+  srTick();
   ctx.clearRect(0, 0, W, H);
   if(Game.state === 'menu') drawMenu();
   else if(Game.state === 'result') drawResult();
@@ -168,9 +175,10 @@ window.__fsm = {
   Acorn:Acorn, Mem:Mem,
   optsList:optsList, selectGame:selectGame, selectDiff:selectDiff, curGame:curGame,
   startCurrent:startCurrent, endGame:endGame, gridCfg:gridCfg,
+  VIEW:VIEW, padRect:padRect, hoverRect:hoverRect,
   diffName:diffName, optsIndex:optsIndex,
   cardRect:cardRect, diffRect:diffRect, musicRect:musicRect, linkRect:linkRect,
-  againRect:againRect, homeRect:homeRect, memRect:memRect,
+  againRect:againRect, homeRect:homeRect, memRect:memRect, backRect:backRect,
   openRunner:openRunner,
   _step:stepMap
 };

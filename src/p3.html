@@ -20,12 +20,14 @@ function curGame(){
   return GAMES[0];
 }
 
-function backRect(){ return { x:14, y:14, w:56, h:56 }; }
+/* 返回按钮。x=150 而不是紧贴音乐按钮的 80：
+   手机上两个按钮都要把热区撑到 44 CSS 像素（见 padRect），
+   撑开之后贴太近会互相吞点击 —— 中间留够距离才不会点「返回」切到静音。 */
+function backRect(){ return { x:150, y:14, w:56, h:56 }; }
 
 function drawTopBar(label){
   drawMusicBtn(musicRect());
   var b = backRect();
-  b.x = 80;
   ctx.fillStyle = 'rgba(0,0,0,.30)';
   roundRect(b.x, b.y, b.w, b.h, 12); ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 2;
@@ -37,18 +39,25 @@ function drawTopBar(label){
 
   ctx.fillStyle = 'rgba(31,77,46,.82)';
   ctx.font = '500 16px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
-  ctx.fillText(label + ' · ' + diffName(), W / 2, 30);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label + ' · ' + diffName(), W / 2, 36);
 
-  ctx.fillStyle = '#1f4d2e';
+  /* 分数旁边要写「得分」二字。之前只甩一个孤立的大数字在右上角，
+     小朋友分不清那是得分、是命、还是时间。 */
+  var scoreTxt = String(Game.score);
   ctx.font = '500 26px system-ui,sans-serif';
-  ctx.textAlign = 'right';
-  ctx.fillText(String(Game.score), W - 20, 30);
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#1f4d2e';
+  ctx.fillText(scoreTxt, W - 20, 36);
+  var sw = ctx.measureText(scoreTxt).width;
+  ctx.fillStyle = 'rgba(31,77,46,.72)';
+  ctx.font = '400 13px system-ui,sans-serif';
+  ctx.fillText('得分', W - 20 - sw - 8, 38);
 }
 
 function heartsBox(){ return { x: W - 20 - 150, y: 48, w: 150, h: 26 }; }
 function drawHearts(n, max){
-  ctx.textAlign = 'right'; ctx.textBaseline = 'central';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(31,77,46,.7)';
   ctx.font = '400 13px system-ui,sans-serif';
   ctx.fillText('机会', W - 20 - (max * 26) - 8, 61);
@@ -120,12 +129,17 @@ function drawResult(){
 /* ============================================================
  * 8. 游戏一：接橡果（涂涂滑翔）
  * ========================================================== */
+/* 每档都有限时。之前三档都不限时，只要不漏就能一直玩下去，
+   分数无限累计 —— 简单档橡果落得慢（vy 2.1）几乎打不死，
+   随手刷个几千分之后，另外两档再也破不了纪录，长期激励直接失效。
+   一局 30~60 秒，正好是「课间十分钟」里能玩一把的时长。 */
 var ACORN_CFG = {
-  easy:   { vy:2.1, gap:74, maxNuts:2, lives:5, moveSpd:7.5 },
-  normal: { vy:3.1, gap:54, maxNuts:3, lives:3, moveSpd:8.5 },
-  hard:   { vy:4.3, gap:40, maxNuts:4, lives:2, moveSpd:9.5 }
+  easy:   { vy:2.1, gap:74, maxNuts:2, lives:5, moveSpd:7.5, time:60 },
+  normal: { vy:3.1, gap:54, maxNuts:3, lives:3, moveSpd:8.5, time:45 },
+  hard:   { vy:4.3, gap:40, maxNuts:4, lives:2, moveSpd:9.5, time:30 }
 };
-var Acorn = { owlX:0, owlVx:0, nuts:[], lives:0, maxLives:0, combo:0, best:0, spawnT:0, hurt:0, catchFx:[] };
+var Acorn = { owlX:0, owlVx:0, nuts:[], lives:0, maxLives:0, combo:0, best:0,
+              spawnT:0, hurt:0, catchFx:[], left:0, timeLimit:0 };
 
 function startAcorn(){
   var c = ACORN_CFG[Game.diff];
@@ -134,11 +148,22 @@ function startAcorn(){
   Acorn.lives = c.lives; Acorn.maxLives = c.lives;
   Acorn.combo = 0; Acorn.best = 0;
   Acorn.spawnT = 40; Acorn.hurt = 0;
+  Acorn.left = c.time; Acorn.timeLimit = c.time;
   Game.score = 0; Game.banner = 90;
 }
 function updateAcorn(dt){
   var c = ACORN_CFG[Game.diff];
   if(Acorn.hurt > 0) Acorn.hurt -= dt;
+
+  /* 倒计时。dt 是帧步长（dtF = dtSec * 60），除以 60 才是秒 ——
+     和找不同 updateSpot 里保持同一套换算。 */
+  if(c.time > 0){
+    Acorn.left = Math.max(0, Acorn.left - dt / 60);
+    if(Acorn.left <= 0){
+      endGame(Game.score, '最高连击 ' + Acorn.best);
+      return;
+    }
+  }
 
   /* 移动：键盘或指针目标 */
   var target = Input.pointX;
@@ -244,17 +269,28 @@ function drawAcorn(){
     ctx.globalAlpha = clamp(fx.life / 26, 0, 1);
     ctx.fillStyle = '#1f4d2e';
     ctx.font = '500 18px system-ui,sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(fx.txt, fx.x, fx.y);
     ctx.globalAlpha = 1;
   }
 
   drawTopBar('接橡果');
   drawHearts(Acorn.lives, Acorn.maxLives);
+
+  /* 剩余时间。画在左上角、顶栏按钮下方（y=92），
+     再往上会压到音乐/返回两个按钮上。最后 10 秒变红加大，孩子能感到紧迫。 */
+  if(Acorn.timeLimit > 0){
+    var low = Acorn.left <= 10;
+    ctx.fillStyle = low ? '#d33' : 'rgba(31,77,46,.82)';
+    ctx.font = '500 ' + (low ? 22 : 19) + 'px system-ui,sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(Math.ceil(Acorn.left) + ' 秒', 24, 92);
+  }
+
   if(Acorn.combo >= 3){
     ctx.fillStyle = '#d8952a';
     ctx.font = '500 20px system-ui,sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText('连击 ×' + Acorn.combo, W / 2, 66);
   }
 }
@@ -386,6 +422,47 @@ function drawAnimalFace(cx, cy, s, k){
   ctx.restore();
 }
 
+/* 牌背图案。之前 12（或 24）张牌全画同一片叶子，一屏看过去是
+   一片一模一样的绿，孩子只能靠位置记牌，画面也单调。
+   改成 4 种森林图案轮着来 —— 图案只跟牌的下标走，不跟动物走，
+   每局洗牌后位置照样随机，所以不会变成「看背面就知道是什么」的作弊提示。 */
+function backPat(i){
+  return (i + Math.floor(i / 4)) % 4;
+}
+function drawCardBack(pat, w, h){
+  ctx.fillStyle = '#6fb85c';
+  roundRect(-w/2, -h/2, w, h, 12); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 2;
+  roundRect(-w/2, -h/2, w, h, 12); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.78)';
+  if(pat === 1){
+    /* 三颗浆果 */
+    ctx.beginPath(); ctx.arc(-12, -5, 6, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(12, -5, 6, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 10, 6, 0, 6.2832); ctx.fill();
+  }else if(pat === 2){
+    /* 小松树 */
+    ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(14, 2); ctx.lineTo(-14, 2); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(18, 14); ctx.lineTo(-18, 14); ctx.closePath(); ctx.fill();
+    ctx.fillRect(-3.5, 14, 7, 12);
+  }else if(pat === 3){
+    /* 橡果 */
+    ctx.beginPath(); ctx.ellipse(0, 5, 10, 12, 0, 0, 6.2832); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.55)';
+    roundRect(-8, -11, 16, 7, 3); ctx.fill();
+    ctx.fillRect(-1.5, -16, 3, 6);
+  }else{
+    /* 叶子（原来的图案，留作第一种） */
+    ctx.beginPath();
+    ctx.moveTo(0, -14);
+    ctx.quadraticCurveTo(16, -4, 0, 16);
+    ctx.quadraticCurveTo(-16, -4, 0, -14);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(80,120,80,.6)';
+    ctx.fillRect(-1.5, -14, 3, 26);
+  }
+}
+
 var Mem = { cards:[], cols:4, rows:3, cw:0, ch:0, x0:0, y0:0, first:-1, flips:0, matched:0, lockT:0, el:0 };
 
 function startMemory(){
@@ -462,18 +539,7 @@ function drawMemory(){
     var sq = Math.abs(Math.cos(flip * Math.PI));
     ctx.scale(Math.max(0.06, sq), 1);
     if(flip < 0.5){
-      ctx.fillStyle = '#6fb85c';
-      roundRect(-r.w/2, -r.h/2, r.w, r.h, 12); ctx.fill();
-      ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 2;
-      roundRect(-r.w/2, -r.h/2, r.w, r.h, 12); ctx.stroke();
-      ctx.fillStyle = 'rgba(255,255,255,.78)';
-      ctx.beginPath();
-      ctx.moveTo(0, -14);
-      ctx.quadraticCurveTo(16, -4, 0, 16);
-      ctx.quadraticCurveTo(-16, -4, 0, -14);
-      ctx.closePath(); ctx.fill();
-      ctx.fillStyle = 'rgba(80,120,80,.6)';
-      ctx.fillRect(-1.5, -14, 3, 26);
+      drawCardBack(backPat(i), r.w, r.h);
     }else{
       ctx.fillStyle = '#fbf8ee';
       roundRect(-r.w/2, -r.h/2, r.w, r.h, 12); ctx.fill();
@@ -486,7 +552,7 @@ function drawMemory(){
   drawTopBar('记忆翻牌');
   ctx.fillStyle = 'rgba(31,77,46,.72)';
   ctx.font = '400 14px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('已配对 ' + (Mem.matched / 2) + ' / ' + (Mem.cards.length / 2) +
                '    翻牌 ' + Mem.flips + ' 次', W / 2, 66);
 }
