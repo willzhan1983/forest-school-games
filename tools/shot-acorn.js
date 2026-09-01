@@ -56,6 +56,21 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms));
   await wait(350);
   await page.screenshot({ path: path.join(OUT, 'A2-acorn-items.png') });
 
+  /* A4 局末状态：速度条三档全亮 + 「加速啦！」闪现
+     和 A2（开局，速度条只亮 1 档）对比着看，才知道爬升有没有真的显示出来。 */
+  await page.evaluate(async () => {
+    const f = window.__fsm, A = f.Acorn;
+    A.nuts.length = 0; A.spawnT = 1e9; f.Game.banner = 0;
+    A.left = A.timeLimit * 0.06;      // 推到局末，跨到第 3 档
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    A.flash = 46;                     // 定在闪现中段，截图才稳定抓得到
+    const W = f.W;
+    A.nuts.push({ x: W * 0.34, y: 200, vy: 0, kind: 'acorn', rot: 0.3, vr: 0, swing: 0 });
+    A.nuts.push({ x: W * 0.62, y: 300, vy: 0, kind: 'shroom', rot: 0, vr: 0, swing: 0 });
+  });
+  await wait(120);
+  await page.screenshot({ path: path.join(OUT, 'A4-acorn-endgame.png') });
+
   /* A3 竖屏：看猫头鹰落位 */
   await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
   await wait(700);

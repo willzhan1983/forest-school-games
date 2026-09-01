@@ -348,6 +348,85 @@ async function sample(page, x, y, w, h) {
     dist45.easy.consec === 0 && dist45.hard.consec === 0,
     `简单 ${(dist45.easy.rate * 100).toFixed(1)}% / 困难 ${(dist45.hard.rate * 100).toFixed(1)}%  连续两个坏：简${dist45.easy.consec} 困${dist45.hard.consec}`);
 
+  /* ---- T46 掉落物尺寸：够大，且跟着画布走而不是写死 ----
+     横屏 960×540、竖屏 540×960，短边都是 540，所以两个朝向应该一样大。
+     写死常数的话，换画布比例道具就会失衡（太大挡视线 / 太小看不清）。 */
+  const szLand = await page.evaluate(() => ({
+    s: window.__fsm.itemSize(), W: window.__fsm.W, H: window.__fsm.H
+  }));
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+  await wait(300);
+  const szPort = await page.evaluate(() => ({
+    s: window.__fsm.itemSize(), W: window.__fsm.W, H: window.__fsm.H
+  }));
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await wait(300);
+  rec('T46', '掉落物够大（≥44）且横竖屏一致（按画布短边算）',
+    szLand.s >= 44 && szLand.s === szPort.s && szPort.W !== szLand.W,
+    `横屏 ${szLand.W}×${szLand.H} -> ${szLand.s}px；竖屏 ${szPort.W}×${szPort.H} -> ${szPort.s}px（改前 34px）`);
+
+  /* ---- T47 难度随时间爬升：实测位移，不读配置 ----
+     塞一颗固定 vy 的橡果，数 12 帧落了多少像素。
+     读 acornRamp() 只能证明函数写对了，证明不了下落循环真的乘了它。 */
+  const r47 = await page.evaluate(async () => {
+    const f = window.__fsm, A = f.Acorn;
+    f.selectDiff('normal'); f.startCurrent();
+    const measure = (ratio) => new Promise(res => {
+      A.nuts.length = 0; A.spawnT = 1e9;
+      /* x 放到 -500：猫头鹰够不着，12 帧内不会被判定接住 */
+      const n = { x: -500, y: -300, vy: 3, kind: 'acorn', rot: 0, vr: 0, swing: 0 };
+      A.nuts.push(n);
+      const y0 = n.y;
+      let k = 0;
+      const step = () => {
+        A.left = A.timeLimit * ratio;   /* 顶住倒计时，否则测的是一路变化的 ramp */
+        if (++k >= 12) { const d = A.nuts[0].y - y0; A.nuts.length = 0; res(d); return; }
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
+    const early = await measure(0.95);
+    const late = await measure(0.03);
+    /* 生成间隔：后期应该更密。gap 本身有 ±25% 随机，取 40 次平均压掉抖动 */
+    const gapAvg = (ratio) => {
+      let sum = 0;
+      for (let i = 0; i < 40; i++) {
+        A.left = A.timeLimit * ratio;
+        A.nuts.length = 0; A.spawnT = 0;
+        f._step.acorn(1);
+        if (A.spawnT > 0) sum += A.spawnT;
+      }
+      return sum / 40;
+    };
+    const gapEarly = gapAvg(0.95), gapLate = gapAvg(0.03);
+    A.left = A.timeLimit * 0.9; A.spawnT = 40; A.nuts.length = 0;
+    return { early, late, gapEarly, gapLate };
+  });
+  rec('T47', '后期掉落更快：同样 12 帧，位移明显变大',
+    r47.late > r47.early * 1.35 && r47.early > 10,
+    `开局 12 帧落 ${r47.early.toFixed(1)}px，局末落 ${r47.late.toFixed(1)}px（×${(r47.late / r47.early).toFixed(2)}）`);
+  rec('T48', '后期来得更密：生成间隔随速度收紧',
+    r47.gapLate < r47.gapEarly * 0.8,
+    `间隔 开局 ${r47.gapEarly.toFixed(1)} 帧 -> 局末 ${r47.gapLate.toFixed(1)} 帧`);
+
+  /* ---- T49 跨档闪「加速啦！」：速度变化不能悄悄发生 ---- */
+  const r49 = await page.evaluate(async () => {
+    const f = window.__fsm, A = f.Acorn;
+    f.selectDiff('normal'); f.startCurrent();
+    const twoFrames = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const before = { lv: A.rampLv, flash: A.flash };
+    A.left = A.timeLimit * 0.5;  await twoFrames();
+    const mid = { lv: A.rampLv, flash: A.flash };
+    A.left = A.timeLimit * 0.05; await twoFrames();
+    const late = { lv: A.rampLv, flash: A.flash };
+    A.left = A.timeLimit * 0.9; A.spawnT = 40;   /* 复位，别让倒计时归零把 T14 带进结算页 */
+    return { before, mid, late, steps: f.RAMP_STEPS };
+  });
+  rec('T49', '每跨一档速度提示闪一次，档位随进度上到顶',
+    r49.before.lv === 0 && r49.mid.lv >= 1 && r49.mid.flash > 0 &&
+    r49.late.lv === r49.steps - 1 && r49.late.flash > 0,
+    `档位 0 -> ${r49.mid.lv}(flash ${r49.mid.flash}) -> ${r49.late.lv}(flash ${r49.late.flash})，共 ${r49.steps} 档`);
+
   /* ---- T14 游戏中返回菜单 ---- */
   /* 返回按钮的位置在源码里可调，测试从 __fsm 现取，别写死坐标 */
   await clickAt(page, ...center(await page.evaluate(() => window.__fsm.backRect())));
