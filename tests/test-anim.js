@@ -219,7 +219,11 @@ async function diffSnap(page, x, y, w, h) {
     f.selectDiff('normal');
     f.startCurrent();
   });
-  await wait(700);
+  /* 开场横幅盖在画面上半部分（y 116~170），淡出的那 1.5 秒里像素一直在变。
+     差异点是随机位置的，很可能正好落在横幅底下 —— 不等它消失，
+     追踪到的就是横幅在淡出，不是「找到了」的标记在弹。 */
+  await page.waitForFunction('window.__fsm.Game.banner === 0', { timeout: 8000 });
+  await wait(200);
   const spot0 = await page.evaluate(() => {
     const f = window.__fsm, S = f.Spot, p0 = f.spotPanel(0);
     const s = S.spots[0];

@@ -258,18 +258,46 @@ function drawMusicBtn(r){
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
+  if(hoverRect(r)) hoverRing(r, 12);
 }
 
 function drawLinkBtn(r){
-  /* 菜单页右上角：跳转回跑酷篇 */
-  ctx.fillStyle = 'rgba(74,144,217,.95)';
+  /* 菜单页右上角：跳转回跑酷篇。
+     文字带 ↗ 角标 —— 光秃秃一个「放学跑酷」，看不出是跳走还是切换 */
+  var hov = hoverRect(r);
+  ctx.fillStyle = hov ? 'rgba(96,164,236,.98)' : 'rgba(74,144,217,.95)';
   roundRect(r.x, r.y, r.w, r.h, 10); ctx.fill();
-  ctx.strokeStyle = '#2b6bb0'; ctx.lineWidth = 2;
+  ctx.strokeStyle = '#2b6bb0'; ctx.lineWidth = hov ? 3 : 2;
   roundRect(r.x, r.y, r.w, r.h, 10); ctx.stroke();
   ctx.fillStyle = '#fff';
-  ctx.font = '500 15px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
-  ctx.fillText('放学跑酷', r.x + r.w / 2, r.y + r.h / 2 + 1);
+  ctx.font = '500 16px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('放学跑酷 ↗', r.x + r.w / 2, r.y + r.h / 2 + 1);
+  if(hov) hoverRing(r, 10);
+}
+
+/* 鼠标悬停时在按钮外圈描一道白边。
+   canvas 里没有 :hover，不画反馈的话桌面端完全看不出按钮能点。 */
+function hoverRing(r, rad){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 3;
+  roundRect(r.x - 3, r.y - 3, r.w + 6, r.h + 6, rad + 2); ctx.stroke();
+  ctx.restore();
+}
+
+/* 小橡果图标。接橡果卡片里只有一只猫头鹰，
+   另外两张卡片都是猫 + 猫头鹰两只，视觉重量差一截，用它补上。 */
+function drawAcornIcon(cx, cy, s){
+  ctx.save();
+  ctx.translate(cx, cy); ctx.scale(s, s);
+  ctx.fillStyle = '#a9703f';
+  ctx.beginPath(); ctx.ellipse(0, 0, 11, 14, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#8a5a30';
+  ctx.beginPath(); ctx.ellipse(-4, -3, 3.5, 6, 0.4, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#6b4522';
+  roundRect(-8, -18, 16, 7, 3); ctx.fill();
+  ctx.fillRect(-1.5, -22, 3, 6);
+  ctx.restore();
 }
 
 /* 卡片字号：按缩放比缩小，但不低于 min —— 加游戏后卡片变窄，
@@ -290,17 +318,19 @@ function drawMenu(){
   for(var i = 0; i < GAMES.length; i++){
     var g = GAMES[i], r = cardRect(i);
     var sel = (Game.gameId === g.id);
-    ctx.fillStyle = sel ? 'rgba(255,255,255,.94)' : 'rgba(255,255,255,.78)';
+    var hov = hoverRect(r);
+    ctx.fillStyle = sel ? 'rgba(255,255,255,.94)' : (hov ? 'rgba(255,255,255,.88)' : 'rgba(255,255,255,.78)');
     roundRect(r.x, r.y, r.w, r.h, 16); ctx.fill();
-    ctx.strokeStyle = sel ? '#4caf6d' : 'rgba(60,80,70,.28)';
-    ctx.lineWidth = sel ? 3.5 : 1.5;
+    ctx.strokeStyle = sel ? '#4caf6d' : (hov ? '#7fc96a' : 'rgba(60,80,70,.28)');
+    ctx.lineWidth = sel ? 3.5 : (hov ? 2.5 : 1.5);
     roundRect(r.x, r.y, r.w, r.h, 16); ctx.stroke();
 
     /* 角色形象。卡片变窄时内容等比缩小，字号设下限保证还能读 */
     var cx = r.x + r.w / 2;
     var sc = r.w / CARD_REF_W;
     if(g.who === 'owl'){
-      drawOwl(cx - 52 * sc, r.y + 18, 104 * sc, 105 * sc);
+      drawOwl(cx - 62 * sc, r.y + 18, 104 * sc, 105 * sc);
+      drawAcornIcon(cx + 66 * sc, r.y + 80, 0.95 * sc);
     }else if(g.who === 'cat'){
       drawCat(cx - 52 * sc, r.y + 18, 104 * sc, 105 * sc);
     }else{
@@ -335,21 +365,22 @@ function drawMenu(){
   /* 档位选择器：接橡果是三档难度，翻牌是棋盘尺寸（牌多就难，所以直接选几×几） */
   var opts = optsList(curGame());
   ctx.fillStyle = 'rgba(31,77,46,.8)';
-  ctx.font = '400 14px system-ui,sans-serif';
+  ctx.font = '400 16px system-ui,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   ctx.fillText(curGame().mode === 'grid' ? '棋盘' : '难度', W / 2, DIFF_Y - 12);
   for(var d = 0; d < opts.length; d++){
     var dd = opts[d], dr = diffRect(d);
     var on = (Game.diff === dd.id);
-    ctx.globalAlpha = on ? 1 : 0.55;
-    ctx.fillStyle = on ? dd.color : 'rgba(255,255,255,.75)';
+    var hov = hoverRect(dr);
+    ctx.globalAlpha = btnAlpha(on, dr);
+    ctx.fillStyle = on ? dd.color : (hov ? 'rgba(255,255,255,.94)' : 'rgba(255,255,255,.75)');
     roundRect(dr.x, dr.y, dr.w, dr.h, 12); ctx.fill();
-    ctx.strokeStyle = on ? dd.dark : 'rgba(60,80,70,.3)';
-    ctx.lineWidth = on ? 2.5 : 1.5;
+    ctx.strokeStyle = on ? dd.dark : (hov ? dd.dark : 'rgba(60,80,70,.3)');
+    ctx.lineWidth = (on || hov) ? 2.5 : 1.5;
     roundRect(dr.x, dr.y, dr.w, dr.h, 12); ctx.stroke();
     ctx.fillStyle = on ? '#ffffff' : '#33513f';
     ctx.font = '500 20px system-ui,sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(dd.name, dr.x + dr.w / 2, dr.y + dr.h / 2 + 1);
     ctx.globalAlpha = 1;
   }
@@ -357,8 +388,9 @@ function drawMenu(){
   drawMusicBtn(musicRect());
   drawLinkBtn(linkRect());
 
+  /* 底部操作提示 13px 太小：手机上画布被缩到 0.41 倍，实际只有 5px，等于没写 */
   ctx.fillStyle = 'rgba(31,77,46,.6)';
-  ctx.font = '400 13px system-ui,sans-serif';
+  ctx.font = '400 15px system-ui,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   /* 数字键提示跟着游戏数量走，别再写死「1 2 3」 */
   var nums = GAMES.map(function(_, i){ return String(i + 1); }).join(' ');

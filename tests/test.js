@@ -271,7 +271,8 @@ async function sample(page, x, y, w, h) {
     `state=${st13.s} score=${st13.sc} lives=${st13.lv}`);
 
   /* ---- T14 游戏中返回菜单 ---- */
-  await clickAt(page, ...center(await page.evaluate(() => ({ x: 80, y: 14, w: 56, h: 56 }))));
+  /* 返回按钮的位置在源码里可调，测试从 __fsm 现取，别写死坐标 */
+  await clickAt(page, ...center(await page.evaluate(() => window.__fsm.backRect())));
   await wait(400);
   const st14 = await page.evaluate(() => window.__fsm.Game.state);
   rec('T14', '游戏中点返回键回菜单', st14 === 'menu', `state=${st14}`);

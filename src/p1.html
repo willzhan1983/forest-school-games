@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>森林学校 · 课间十分钟</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%8C%B0</text></svg>">
+<!-- PWA：加到手机主屏后全屏打开、断网也能玩（校园 WiFi 不稳时尤其管用） -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#6fb85c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="课间十分钟">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icon.svg">
 <style>
   html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#6fb85c;
     -webkit-tap-highlight-color:transparent;overscroll-behavior:none;}
@@ -13,19 +21,34 @@
   #wrap{position:relative;line-height:0;}
   #game{display:block;touch-action:none;background:#bfe8f7;border-radius:10px;
     box-shadow:0 10px 40px rgba(0,0,0,.28);}
-  #tip{position:absolute;left:50%;top:8px;transform:translateX(-50%);
-    background:rgba(28,44,36,.86);color:#fff;font-size:12px;line-height:1.5;
-    padding:8px 14px;border-radius:999px;white-space:nowrap;
-    display:none;align-items:center;gap:10px;z-index:5;}
-  #tip button{background:rgba(255,255,255,.2);border:0;color:#fff;font-size:12px;
-    padding:5px 12px;border-radius:999px;cursor:pointer;font-family:inherit;}
+  /* 提示条用 fixed 钉在视口底部，不放画布里。
+     两道坑都踩过：① 放画布顶部（top:8px）会盖住主标题；
+     ② 放画布底部又会压住难度按钮 —— 竖屏时画布被压扁到 236px 高居中显示，
+     画布底边正好落在难度按钮上。挪到视口底部（画布外的留白区）才两不耽误。 */
+  #tip{position:fixed;left:50%;bottom:calc(12px + env(safe-area-inset-bottom, 0px));
+    transform:translateX(-50%);
+    background:rgba(28,44,36,.86);color:#fff;font-size:14px;line-height:1.5;
+    padding:7px 8px 7px 16px;border-radius:999px;white-space:nowrap;
+    display:none;align-items:center;gap:10px;z-index:20;}
+  /* 关闭按钮撑到 44px 高 —— 触控最小命中区（Apple HIG）。
+     之前 12px 字 + 5px 内边距，手机上只有 20px 出头，小孩根本点不中。 */
+  #tip button{background:rgba(255,255,255,.2);border:0;color:#fff;font-size:14px;
+    padding:0 16px;min-height:44px;border-radius:999px;cursor:pointer;
+    font-family:inherit;-webkit-appearance:none;}
+  /* 屏幕阅读器专用文本：canvas 里画的东西读屏软件一个字也读不到，
+     关键状态得同步到这个 aria-live 区域，视觉上完全隐藏。 */
+  #sr{position:absolute;width:1px;height:1px;overflow:hidden;
+    clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;}
 </style>
 </head>
 <body>
 <div id="wrap">
-  <canvas id="game" width="960" height="540"></canvas>
-  <div id="tip"><span>横屏玩更舒服，也可以继续竖屏</span><button id="tipClose">知道了</button></div>
+  <canvas id="game" width="960" height="540" tabindex="0" role="application"
+    aria-label="森林学校课间十分钟，三个小游戏：接橡果、记忆翻牌、找不同。键盘按 1 2 3 选游戏，左右方向键选档位，空格开始，Esc 返回菜单。"></canvas>
+  <div id="sr" aria-live="polite" aria-atomic="true"></div>
 </div>
+<!-- 提示条在 #wrap 外面：放进画布容器会挡住画布里的按钮 -->
+<div id="tip"><span>横屏玩更舒服，也可以继续竖屏</span><button id="tipClose">知道了</button></div>
 <script>
 (function(){
 'use strict';
@@ -34,6 +57,9 @@
  * 1. 基础常量与画布
  * ========================================================== */
 var W = 960, H = 540;
+/* 当前视口状态。s = 逻辑坐标 → 屏幕 CSS 像素的缩放比，
+   padRect() 靠它把按钮热区撑到 44px；竖屏提示和布局也读它。 */
+var VIEW = { s:1, portrait:false, dpr:1 };
 var canvas = document.getElementById('game');
 var ctx = canvas.getContext('2d');
 var tipEl = document.getElementById('tip');
@@ -51,6 +77,7 @@ function resize(){
   canvas.height = Math.round(cssH * dpr);
   ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
   ctx.imageSmoothingEnabled = true;
+  VIEW.s = s; VIEW.dpr = dpr; VIEW.portrait = (availH > availW * 1.15);
   /* 竖屏提示：非遮挡式，4 秒自动隐藏 */
   if(availH > availW * 1.15 && availW < 760){
     tipEl.style.display = 'flex';
@@ -83,6 +110,30 @@ function lerp(a, b, t){ return a + (b - a) * t; }
 function rnd(a, b){ return a + Math.random() * (b - a); }
 function rndInt(a, b){ return Math.floor(rnd(a, b + 1)); }
 function hitRect(x, y, r){ return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
+
+/* 鼠标悬停判定。触屏没有 hover 这回事（手指离屏后不留鼠标位置），
+   所以 Input.touch 为真时一律 false，免得点一下之后按钮一直亮着。 */
+function hoverRect(r){
+  if(Input.touch) return false;
+  if(Input.mx === null || Input.mx === undefined) return false;
+  return hitRect(Input.mx, Input.my, r);
+}
+/* 按钮不透明度：选中 1、悬停 0.92、其余 0.78。
+   之前未选中给 0.55，淡得像被禁用了 —— 小朋友第一眼会以为只有「简单」能选。 */
+function btnAlpha(sel, r){
+  if(sel) return 1;
+  return hoverRect(r) ? 0.92 : 0.78;
+}
+
+/* 触控最小热区。逻辑坐标要除以当前缩放比 s 才是屏幕 CSS 像素：
+   960 宽的画布缩到 390 宽的手机上，s≈0.41，一个 100×50 的按钮
+   实际只有 41×20 CSS 像素 —— 远低于 44px 的触屏命中标准（Apple HIG）。
+   视觉大小不变，只在命中判定时向外扩。 */
+function padRect(r, minCss){
+  var need = (minCss || 44) / Math.max(VIEW.s, 0.0001);
+  var dx = Math.max(0, (need - r.w) / 2), dy = Math.max(0, (need - r.h) / 2);
+  return { x:r.x - dx, y:r.y - dy, w:r.w + dx * 2, h:r.h + dy * 2 };
+}
 
 /* 森林主题背景（天空 + 远山 + 草地） */
 function drawBackdrop(t, night){
@@ -150,7 +201,7 @@ function drawButton(r, label, fill, textColor, disabled){
   roundRect(r.x, r.y, r.w, r.h, 14); ctx.stroke();
   ctx.fillStyle = textColor;
   ctx.font = '500 22px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + 1);
   ctx.globalAlpha = 1;
 }
@@ -302,3 +353,38 @@ var Audio2 = {
   }
 };
 try{ var _mm = localStorage.getItem('fsm_music'); if(_mm !== null) Audio2.musicOn = (_mm === '1'); }catch(e){}
+
+/* ============================================================
+ * 3. 屏幕阅读器播报
+ * ------------------------------------------------------------
+ * 画面是 canvas 画的，读屏软件一个字也读不到。把菜单选择、
+ * 开局玩法、结算分数同步到一个 aria-live 区域，才有基本的可访问性。
+ * srTick() 每帧调用，靠 srLast 去重，只有文本真变了才碰 DOM。
+ * ========================================================== */
+var srEl = document.getElementById('sr');
+var srLast = '';
+function announce(txt){
+  if(!srEl || txt === srLast) return;
+  srLast = txt;
+  srEl.textContent = txt;
+}
+function srTick(){
+  if(Game.state === 'menu'){
+    var g = curGame();
+    announce('菜单：' + g.name + '，' + (g.mode === 'grid' ? '棋盘' : '难度') +
+             diffName() + '，最高分 ' + (Game.best[bestKey(g.id, Game.diffs[g.id])] || 0));
+  }else if(Game.state === 'result'){
+    announce('本局 ' + Game.score + ' 分' +
+             (resultInfo.isNew ? '，新纪录' : '，最高分 ' + (Game.best[bestKey(Game.gameId)] || 0)));
+  }else{
+    announce('开始：' + curGame().name + '。' + bannerText());
+  }
+}
+
+/* Service Worker：缓存住页面，断网也能玩。
+   只在 https（或 localhost）下注册，file:// 打开时静默跳过。 */
+if('serviceWorker' in navigator && location.protocol !== 'file:'){
+  window.addEventListener('load', function(){
+    try{ navigator.serviceWorker.register('sw.js').catch(function(){}); }catch(e){}
+  });
+}

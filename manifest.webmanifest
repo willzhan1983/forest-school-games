@@ -1,0 +1,26 @@
+{
+  "name": "森林学校 · 课间十分钟",
+  "short_name": "课间十分钟",
+  "description": "给小朋友做的课间小游戏合集：接橡果、记忆翻牌、找不同",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#6fb85c",
+  "theme_color": "#6fb85c",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

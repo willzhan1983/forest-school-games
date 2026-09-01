@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>森林学校 · 课间十分钟</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%8C%B0</text></svg>">
+<!-- PWA：加到手机主屏后全屏打开、断网也能玩（校园 WiFi 不稳时尤其管用） -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#6fb85c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="课间十分钟">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icon.svg">
 <style>
   html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#6fb85c;
     -webkit-tap-highlight-color:transparent;overscroll-behavior:none;}
@@ -13,19 +21,34 @@
   #wrap{position:relative;line-height:0;}
   #game{display:block;touch-action:none;background:#bfe8f7;border-radius:10px;
     box-shadow:0 10px 40px rgba(0,0,0,.28);}
-  #tip{position:absolute;left:50%;top:8px;transform:translateX(-50%);
-    background:rgba(28,44,36,.86);color:#fff;font-size:12px;line-height:1.5;
-    padding:8px 14px;border-radius:999px;white-space:nowrap;
-    display:none;align-items:center;gap:10px;z-index:5;}
-  #tip button{background:rgba(255,255,255,.2);border:0;color:#fff;font-size:12px;
-    padding:5px 12px;border-radius:999px;cursor:pointer;font-family:inherit;}
+  /* 提示条用 fixed 钉在视口底部，不放画布里。
+     两道坑都踩过：① 放画布顶部（top:8px）会盖住主标题；
+     ② 放画布底部又会压住难度按钮 —— 竖屏时画布被压扁到 236px 高居中显示，
+     画布底边正好落在难度按钮上。挪到视口底部（画布外的留白区）才两不耽误。 */
+  #tip{position:fixed;left:50%;bottom:calc(12px + env(safe-area-inset-bottom, 0px));
+    transform:translateX(-50%);
+    background:rgba(28,44,36,.86);color:#fff;font-size:14px;line-height:1.5;
+    padding:7px 8px 7px 16px;border-radius:999px;white-space:nowrap;
+    display:none;align-items:center;gap:10px;z-index:20;}
+  /* 关闭按钮撑到 44px 高 —— 触控最小命中区（Apple HIG）。
+     之前 12px 字 + 5px 内边距，手机上只有 20px 出头，小孩根本点不中。 */
+  #tip button{background:rgba(255,255,255,.2);border:0;color:#fff;font-size:14px;
+    padding:0 16px;min-height:44px;border-radius:999px;cursor:pointer;
+    font-family:inherit;-webkit-appearance:none;}
+  /* 屏幕阅读器专用文本：canvas 里画的东西读屏软件一个字也读不到，
+     关键状态得同步到这个 aria-live 区域，视觉上完全隐藏。 */
+  #sr{position:absolute;width:1px;height:1px;overflow:hidden;
+    clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;}
 </style>
 </head>
 <body>
 <div id="wrap">
-  <canvas id="game" width="960" height="540"></canvas>
-  <div id="tip"><span>横屏玩更舒服，也可以继续竖屏</span><button id="tipClose">知道了</button></div>
+  <canvas id="game" width="960" height="540" tabindex="0" role="application"
+    aria-label="森林学校课间十分钟，三个小游戏：接橡果、记忆翻牌、找不同。键盘按 1 2 3 选游戏，左右方向键选档位，空格开始，Esc 返回菜单。"></canvas>
+  <div id="sr" aria-live="polite" aria-atomic="true"></div>
 </div>
+<!-- 提示条在 #wrap 外面：放进画布容器会挡住画布里的按钮 -->
+<div id="tip"><span>横屏玩更舒服，也可以继续竖屏</span><button id="tipClose">知道了</button></div>
 <script>
 (function(){
 'use strict';
@@ -34,6 +57,9 @@
  * 1. 基础常量与画布
  * ========================================================== */
 var W = 960, H = 540;
+/* 当前视口状态。s = 逻辑坐标 → 屏幕 CSS 像素的缩放比，
+   padRect() 靠它把按钮热区撑到 44px；竖屏提示和布局也读它。 */
+var VIEW = { s:1, portrait:false, dpr:1 };
 var canvas = document.getElementById('game');
 var ctx = canvas.getContext('2d');
 var tipEl = document.getElementById('tip');
@@ -51,6 +77,7 @@ function resize(){
   canvas.height = Math.round(cssH * dpr);
   ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
   ctx.imageSmoothingEnabled = true;
+  VIEW.s = s; VIEW.dpr = dpr; VIEW.portrait = (availH > availW * 1.15);
   /* 竖屏提示：非遮挡式，4 秒自动隐藏 */
   if(availH > availW * 1.15 && availW < 760){
     tipEl.style.display = 'flex';
@@ -83,6 +110,30 @@ function lerp(a, b, t){ return a + (b - a) * t; }
 function rnd(a, b){ return a + Math.random() * (b - a); }
 function rndInt(a, b){ return Math.floor(rnd(a, b + 1)); }
 function hitRect(x, y, r){ return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
+
+/* 鼠标悬停判定。触屏没有 hover 这回事（手指离屏后不留鼠标位置），
+   所以 Input.touch 为真时一律 false，免得点一下之后按钮一直亮着。 */
+function hoverRect(r){
+  if(Input.touch) return false;
+  if(Input.mx === null || Input.mx === undefined) return false;
+  return hitRect(Input.mx, Input.my, r);
+}
+/* 按钮不透明度：选中 1、悬停 0.92、其余 0.78。
+   之前未选中给 0.55，淡得像被禁用了 —— 小朋友第一眼会以为只有「简单」能选。 */
+function btnAlpha(sel, r){
+  if(sel) return 1;
+  return hoverRect(r) ? 0.92 : 0.78;
+}
+
+/* 触控最小热区。逻辑坐标要除以当前缩放比 s 才是屏幕 CSS 像素：
+   960 宽的画布缩到 390 宽的手机上，s≈0.41，一个 100×50 的按钮
+   实际只有 41×20 CSS 像素 —— 远低于 44px 的触屏命中标准（Apple HIG）。
+   视觉大小不变，只在命中判定时向外扩。 */
+function padRect(r, minCss){
+  var need = (minCss || 44) / Math.max(VIEW.s, 0.0001);
+  var dx = Math.max(0, (need - r.w) / 2), dy = Math.max(0, (need - r.h) / 2);
+  return { x:r.x - dx, y:r.y - dy, w:r.w + dx * 2, h:r.h + dy * 2 };
+}
 
 /* 森林主题背景（天空 + 远山 + 草地） */
 function drawBackdrop(t, night){
@@ -150,7 +201,7 @@ function drawButton(r, label, fill, textColor, disabled){
   roundRect(r.x, r.y, r.w, r.h, 14); ctx.stroke();
   ctx.fillStyle = textColor;
   ctx.font = '500 22px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + 1);
   ctx.globalAlpha = 1;
 }
@@ -302,6 +353,41 @@ var Audio2 = {
   }
 };
 try{ var _mm = localStorage.getItem('fsm_music'); if(_mm !== null) Audio2.musicOn = (_mm === '1'); }catch(e){}
+
+/* ============================================================
+ * 3. 屏幕阅读器播报
+ * ------------------------------------------------------------
+ * 画面是 canvas 画的，读屏软件一个字也读不到。把菜单选择、
+ * 开局玩法、结算分数同步到一个 aria-live 区域，才有基本的可访问性。
+ * srTick() 每帧调用，靠 srLast 去重，只有文本真变了才碰 DOM。
+ * ========================================================== */
+var srEl = document.getElementById('sr');
+var srLast = '';
+function announce(txt){
+  if(!srEl || txt === srLast) return;
+  srLast = txt;
+  srEl.textContent = txt;
+}
+function srTick(){
+  if(Game.state === 'menu'){
+    var g = curGame();
+    announce('菜单：' + g.name + '，' + (g.mode === 'grid' ? '棋盘' : '难度') +
+             diffName() + '，最高分 ' + (Game.best[bestKey(g.id, Game.diffs[g.id])] || 0));
+  }else if(Game.state === 'result'){
+    announce('本局 ' + Game.score + ' 分' +
+             (resultInfo.isNew ? '，新纪录' : '，最高分 ' + (Game.best[bestKey(Game.gameId)] || 0)));
+  }else{
+    announce('开始：' + curGame().name + '。' + bannerText());
+  }
+}
+
+/* Service Worker：缓存住页面，断网也能玩。
+   只在 https（或 localhost）下注册，file:// 打开时静默跳过。 */
+if('serviceWorker' in navigator && location.protocol !== 'file:'){
+  window.addEventListener('load', function(){
+    try{ navigator.serviceWorker.register('sw.js').catch(function(){}); }catch(e){}
+  });
+}
 
 
 /* ============================================================
@@ -563,18 +649,46 @@ function drawMusicBtn(r){
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
+  if(hoverRect(r)) hoverRing(r, 12);
 }
 
 function drawLinkBtn(r){
-  /* 菜单页右上角：跳转回跑酷篇 */
-  ctx.fillStyle = 'rgba(74,144,217,.95)';
+  /* 菜单页右上角：跳转回跑酷篇。
+     文字带 ↗ 角标 —— 光秃秃一个「放学跑酷」，看不出是跳走还是切换 */
+  var hov = hoverRect(r);
+  ctx.fillStyle = hov ? 'rgba(96,164,236,.98)' : 'rgba(74,144,217,.95)';
   roundRect(r.x, r.y, r.w, r.h, 10); ctx.fill();
-  ctx.strokeStyle = '#2b6bb0'; ctx.lineWidth = 2;
+  ctx.strokeStyle = '#2b6bb0'; ctx.lineWidth = hov ? 3 : 2;
   roundRect(r.x, r.y, r.w, r.h, 10); ctx.stroke();
   ctx.fillStyle = '#fff';
-  ctx.font = '500 15px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
-  ctx.fillText('放学跑酷', r.x + r.w / 2, r.y + r.h / 2 + 1);
+  ctx.font = '500 16px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('放学跑酷 ↗', r.x + r.w / 2, r.y + r.h / 2 + 1);
+  if(hov) hoverRing(r, 10);
+}
+
+/* 鼠标悬停时在按钮外圈描一道白边。
+   canvas 里没有 :hover，不画反馈的话桌面端完全看不出按钮能点。 */
+function hoverRing(r, rad){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 3;
+  roundRect(r.x - 3, r.y - 3, r.w + 6, r.h + 6, rad + 2); ctx.stroke();
+  ctx.restore();
+}
+
+/* 小橡果图标。接橡果卡片里只有一只猫头鹰，
+   另外两张卡片都是猫 + 猫头鹰两只，视觉重量差一截，用它补上。 */
+function drawAcornIcon(cx, cy, s){
+  ctx.save();
+  ctx.translate(cx, cy); ctx.scale(s, s);
+  ctx.fillStyle = '#a9703f';
+  ctx.beginPath(); ctx.ellipse(0, 0, 11, 14, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#8a5a30';
+  ctx.beginPath(); ctx.ellipse(-4, -3, 3.5, 6, 0.4, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#6b4522';
+  roundRect(-8, -18, 16, 7, 3); ctx.fill();
+  ctx.fillRect(-1.5, -22, 3, 6);
+  ctx.restore();
 }
 
 /* 卡片字号：按缩放比缩小，但不低于 min —— 加游戏后卡片变窄，
@@ -595,17 +709,19 @@ function drawMenu(){
   for(var i = 0; i < GAMES.length; i++){
     var g = GAMES[i], r = cardRect(i);
     var sel = (Game.gameId === g.id);
-    ctx.fillStyle = sel ? 'rgba(255,255,255,.94)' : 'rgba(255,255,255,.78)';
+    var hov = hoverRect(r);
+    ctx.fillStyle = sel ? 'rgba(255,255,255,.94)' : (hov ? 'rgba(255,255,255,.88)' : 'rgba(255,255,255,.78)');
     roundRect(r.x, r.y, r.w, r.h, 16); ctx.fill();
-    ctx.strokeStyle = sel ? '#4caf6d' : 'rgba(60,80,70,.28)';
-    ctx.lineWidth = sel ? 3.5 : 1.5;
+    ctx.strokeStyle = sel ? '#4caf6d' : (hov ? '#7fc96a' : 'rgba(60,80,70,.28)');
+    ctx.lineWidth = sel ? 3.5 : (hov ? 2.5 : 1.5);
     roundRect(r.x, r.y, r.w, r.h, 16); ctx.stroke();
 
     /* 角色形象。卡片变窄时内容等比缩小，字号设下限保证还能读 */
     var cx = r.x + r.w / 2;
     var sc = r.w / CARD_REF_W;
     if(g.who === 'owl'){
-      drawOwl(cx - 52 * sc, r.y + 18, 104 * sc, 105 * sc);
+      drawOwl(cx - 62 * sc, r.y + 18, 104 * sc, 105 * sc);
+      drawAcornIcon(cx + 66 * sc, r.y + 80, 0.95 * sc);
     }else if(g.who === 'cat'){
       drawCat(cx - 52 * sc, r.y + 18, 104 * sc, 105 * sc);
     }else{
@@ -640,21 +756,22 @@ function drawMenu(){
   /* 档位选择器：接橡果是三档难度，翻牌是棋盘尺寸（牌多就难，所以直接选几×几） */
   var opts = optsList(curGame());
   ctx.fillStyle = 'rgba(31,77,46,.8)';
-  ctx.font = '400 14px system-ui,sans-serif';
+  ctx.font = '400 16px system-ui,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   ctx.fillText(curGame().mode === 'grid' ? '棋盘' : '难度', W / 2, DIFF_Y - 12);
   for(var d = 0; d < opts.length; d++){
     var dd = opts[d], dr = diffRect(d);
     var on = (Game.diff === dd.id);
-    ctx.globalAlpha = on ? 1 : 0.55;
-    ctx.fillStyle = on ? dd.color : 'rgba(255,255,255,.75)';
+    var hov = hoverRect(dr);
+    ctx.globalAlpha = btnAlpha(on, dr);
+    ctx.fillStyle = on ? dd.color : (hov ? 'rgba(255,255,255,.94)' : 'rgba(255,255,255,.75)');
     roundRect(dr.x, dr.y, dr.w, dr.h, 12); ctx.fill();
-    ctx.strokeStyle = on ? dd.dark : 'rgba(60,80,70,.3)';
-    ctx.lineWidth = on ? 2.5 : 1.5;
+    ctx.strokeStyle = on ? dd.dark : (hov ? dd.dark : 'rgba(60,80,70,.3)');
+    ctx.lineWidth = (on || hov) ? 2.5 : 1.5;
     roundRect(dr.x, dr.y, dr.w, dr.h, 12); ctx.stroke();
     ctx.fillStyle = on ? '#ffffff' : '#33513f';
     ctx.font = '500 20px system-ui,sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(dd.name, dr.x + dr.w / 2, dr.y + dr.h / 2 + 1);
     ctx.globalAlpha = 1;
   }
@@ -662,8 +779,9 @@ function drawMenu(){
   drawMusicBtn(musicRect());
   drawLinkBtn(linkRect());
 
+  /* 底部操作提示 13px 太小：手机上画布被缩到 0.41 倍，实际只有 5px，等于没写 */
   ctx.fillStyle = 'rgba(31,77,46,.6)';
-  ctx.font = '400 13px system-ui,sans-serif';
+  ctx.font = '400 15px system-ui,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   /* 数字键提示跟着游戏数量走，别再写死「1 2 3」 */
   var nums = GAMES.map(function(_, i){ return String(i + 1); }).join(' ');
@@ -698,12 +816,14 @@ function curGame(){
   return GAMES[0];
 }
 
-function backRect(){ return { x:14, y:14, w:56, h:56 }; }
+/* 返回按钮。x=150 而不是紧贴音乐按钮的 80：
+   手机上两个按钮都要把热区撑到 44 CSS 像素（见 padRect），
+   撑开之后贴太近会互相吞点击 —— 中间留够距离才不会点「返回」切到静音。 */
+function backRect(){ return { x:150, y:14, w:56, h:56 }; }
 
 function drawTopBar(label){
   drawMusicBtn(musicRect());
   var b = backRect();
-  b.x = 80;
   ctx.fillStyle = 'rgba(0,0,0,.30)';
   roundRect(b.x, b.y, b.w, b.h, 12); ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 2;
@@ -715,18 +835,25 @@ function drawTopBar(label){
 
   ctx.fillStyle = 'rgba(31,77,46,.82)';
   ctx.font = '500 16px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
-  ctx.fillText(label + ' · ' + diffName(), W / 2, 30);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label + ' · ' + diffName(), W / 2, 36);
 
-  ctx.fillStyle = '#1f4d2e';
+  /* 分数旁边要写「得分」二字。之前只甩一个孤立的大数字在右上角，
+     小朋友分不清那是得分、是命、还是时间。 */
+  var scoreTxt = String(Game.score);
   ctx.font = '500 26px system-ui,sans-serif';
-  ctx.textAlign = 'right';
-  ctx.fillText(String(Game.score), W - 20, 30);
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#1f4d2e';
+  ctx.fillText(scoreTxt, W - 20, 36);
+  var sw = ctx.measureText(scoreTxt).width;
+  ctx.fillStyle = 'rgba(31,77,46,.72)';
+  ctx.font = '400 13px system-ui,sans-serif';
+  ctx.fillText('得分', W - 20 - sw - 8, 38);
 }
 
 function heartsBox(){ return { x: W - 20 - 150, y: 48, w: 150, h: 26 }; }
 function drawHearts(n, max){
-  ctx.textAlign = 'right'; ctx.textBaseline = 'central';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(31,77,46,.7)';
   ctx.font = '400 13px system-ui,sans-serif';
   ctx.fillText('机会', W - 20 - (max * 26) - 8, 61);
@@ -798,12 +925,17 @@ function drawResult(){
 /* ============================================================
  * 8. 游戏一：接橡果（涂涂滑翔）
  * ========================================================== */
+/* 每档都有限时。之前三档都不限时，只要不漏就能一直玩下去，
+   分数无限累计 —— 简单档橡果落得慢（vy 2.1）几乎打不死，
+   随手刷个几千分之后，另外两档再也破不了纪录，长期激励直接失效。
+   一局 30~60 秒，正好是「课间十分钟」里能玩一把的时长。 */
 var ACORN_CFG = {
-  easy:   { vy:2.1, gap:74, maxNuts:2, lives:5, moveSpd:7.5 },
-  normal: { vy:3.1, gap:54, maxNuts:3, lives:3, moveSpd:8.5 },
-  hard:   { vy:4.3, gap:40, maxNuts:4, lives:2, moveSpd:9.5 }
+  easy:   { vy:2.1, gap:74, maxNuts:2, lives:5, moveSpd:7.5, time:60 },
+  normal: { vy:3.1, gap:54, maxNuts:3, lives:3, moveSpd:8.5, time:45 },
+  hard:   { vy:4.3, gap:40, maxNuts:4, lives:2, moveSpd:9.5, time:30 }
 };
-var Acorn = { owlX:0, owlVx:0, nuts:[], lives:0, maxLives:0, combo:0, best:0, spawnT:0, hurt:0, catchFx:[] };
+var Acorn = { owlX:0, owlVx:0, nuts:[], lives:0, maxLives:0, combo:0, best:0,
+              spawnT:0, hurt:0, catchFx:[], left:0, timeLimit:0 };
 
 function startAcorn(){
   var c = ACORN_CFG[Game.diff];
@@ -812,11 +944,22 @@ function startAcorn(){
   Acorn.lives = c.lives; Acorn.maxLives = c.lives;
   Acorn.combo = 0; Acorn.best = 0;
   Acorn.spawnT = 40; Acorn.hurt = 0;
+  Acorn.left = c.time; Acorn.timeLimit = c.time;
   Game.score = 0; Game.banner = 90;
 }
 function updateAcorn(dt){
   var c = ACORN_CFG[Game.diff];
   if(Acorn.hurt > 0) Acorn.hurt -= dt;
+
+  /* 倒计时。dt 是帧步长（dtF = dtSec * 60），除以 60 才是秒 ——
+     和找不同 updateSpot 里保持同一套换算。 */
+  if(c.time > 0){
+    Acorn.left = Math.max(0, Acorn.left - dt / 60);
+    if(Acorn.left <= 0){
+      endGame(Game.score, '最高连击 ' + Acorn.best);
+      return;
+    }
+  }
 
   /* 移动：键盘或指针目标 */
   var target = Input.pointX;
@@ -922,17 +1065,28 @@ function drawAcorn(){
     ctx.globalAlpha = clamp(fx.life / 26, 0, 1);
     ctx.fillStyle = '#1f4d2e';
     ctx.font = '500 18px system-ui,sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(fx.txt, fx.x, fx.y);
     ctx.globalAlpha = 1;
   }
 
   drawTopBar('接橡果');
   drawHearts(Acorn.lives, Acorn.maxLives);
+
+  /* 剩余时间。画在左上角、顶栏按钮下方（y=92），
+     再往上会压到音乐/返回两个按钮上。最后 10 秒变红加大，孩子能感到紧迫。 */
+  if(Acorn.timeLimit > 0){
+    var low = Acorn.left <= 10;
+    ctx.fillStyle = low ? '#d33' : 'rgba(31,77,46,.82)';
+    ctx.font = '500 ' + (low ? 22 : 19) + 'px system-ui,sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(Math.ceil(Acorn.left) + ' 秒', 24, 92);
+  }
+
   if(Acorn.combo >= 3){
     ctx.fillStyle = '#d8952a';
     ctx.font = '500 20px system-ui,sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText('连击 ×' + Acorn.combo, W / 2, 66);
   }
 }
@@ -1064,6 +1218,47 @@ function drawAnimalFace(cx, cy, s, k){
   ctx.restore();
 }
 
+/* 牌背图案。之前 12（或 24）张牌全画同一片叶子，一屏看过去是
+   一片一模一样的绿，孩子只能靠位置记牌，画面也单调。
+   改成 4 种森林图案轮着来 —— 图案只跟牌的下标走，不跟动物走，
+   每局洗牌后位置照样随机，所以不会变成「看背面就知道是什么」的作弊提示。 */
+function backPat(i){
+  return (i + Math.floor(i / 4)) % 4;
+}
+function drawCardBack(pat, w, h){
+  ctx.fillStyle = '#6fb85c';
+  roundRect(-w/2, -h/2, w, h, 12); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 2;
+  roundRect(-w/2, -h/2, w, h, 12); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.78)';
+  if(pat === 1){
+    /* 三颗浆果 */
+    ctx.beginPath(); ctx.arc(-12, -5, 6, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(12, -5, 6, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 10, 6, 0, 6.2832); ctx.fill();
+  }else if(pat === 2){
+    /* 小松树 */
+    ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(14, 2); ctx.lineTo(-14, 2); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(18, 14); ctx.lineTo(-18, 14); ctx.closePath(); ctx.fill();
+    ctx.fillRect(-3.5, 14, 7, 12);
+  }else if(pat === 3){
+    /* 橡果 */
+    ctx.beginPath(); ctx.ellipse(0, 5, 10, 12, 0, 0, 6.2832); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.55)';
+    roundRect(-8, -11, 16, 7, 3); ctx.fill();
+    ctx.fillRect(-1.5, -16, 3, 6);
+  }else{
+    /* 叶子（原来的图案，留作第一种） */
+    ctx.beginPath();
+    ctx.moveTo(0, -14);
+    ctx.quadraticCurveTo(16, -4, 0, 16);
+    ctx.quadraticCurveTo(-16, -4, 0, -14);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(80,120,80,.6)';
+    ctx.fillRect(-1.5, -14, 3, 26);
+  }
+}
+
 var Mem = { cards:[], cols:4, rows:3, cw:0, ch:0, x0:0, y0:0, first:-1, flips:0, matched:0, lockT:0, el:0 };
 
 function startMemory(){
@@ -1140,18 +1335,7 @@ function drawMemory(){
     var sq = Math.abs(Math.cos(flip * Math.PI));
     ctx.scale(Math.max(0.06, sq), 1);
     if(flip < 0.5){
-      ctx.fillStyle = '#6fb85c';
-      roundRect(-r.w/2, -r.h/2, r.w, r.h, 12); ctx.fill();
-      ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 2;
-      roundRect(-r.w/2, -r.h/2, r.w, r.h, 12); ctx.stroke();
-      ctx.fillStyle = 'rgba(255,255,255,.78)';
-      ctx.beginPath();
-      ctx.moveTo(0, -14);
-      ctx.quadraticCurveTo(16, -4, 0, 16);
-      ctx.quadraticCurveTo(-16, -4, 0, -14);
-      ctx.closePath(); ctx.fill();
-      ctx.fillStyle = 'rgba(80,120,80,.6)';
-      ctx.fillRect(-1.5, -14, 3, 26);
+      drawCardBack(backPat(i), r.w, r.h);
     }else{
       ctx.fillStyle = '#fbf8ee';
       roundRect(-r.w/2, -r.h/2, r.w, r.h, 12); ctx.fill();
@@ -1164,7 +1348,7 @@ function drawMemory(){
   drawTopBar('记忆翻牌');
   ctx.fillStyle = 'rgba(31,77,46,.72)';
   ctx.font = '400 14px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('已配对 ' + (Mem.matched / 2) + ' / ' + (Mem.cards.length / 2) +
                '    翻牌 ' + Mem.flips + ' 次', W / 2, 66);
 }
@@ -1228,7 +1412,10 @@ function spotPanel(i){ return { x: 24 + i * (SPOT_W + 24), y: SPOT_TOP, w: SPOT_
 
 /* 难度：差异数 / 场景元素数 / 点错机会 / 限时（秒，0=不限）/ 计分基数 */
 var SPOT_CFG = {
-  easy:   { diffs:3, props:9,  lives:5, time:0,  base:900,  kinds:['color','size'] },
+  /* easy 原本只有 color / size 两种，9 个景物里找 3 处，
+     不是"变红了"就是"变小了"，玩两局就腻。加上 move 之后变化方式多一种，
+     仍然是最好认的三种，没有 remove（凭空少一个对小朋友最不好找）。 */
+  easy:   { diffs:3, props:9,  lives:5, time:0,  base:900,  kinds:['color','size','move'] },
   normal: { diffs:5, props:14, lives:4, time:0,  base:1300, kinds:['color','size','remove','move'] },
   hard:   { diffs:7, props:18, lives:3, time:75, base:1700, kinds:['color','size','remove','move','flip'] }
 };
@@ -1600,7 +1787,7 @@ function drawSpot(){
   drawTopBar('找不同');
   drawHearts(Spot.lives, Spot.maxLives);
 
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(31,77,46,.75)';
   ctx.font = '500 15px system-ui,sans-serif';
   ctx.fillText('找到 ' + Spot.found + ' / ' + Spot.spots.length, W / 2, 66);
@@ -1609,8 +1796,8 @@ function drawSpot(){
     var low = Spot.left <= 15;
     ctx.fillStyle = low ? '#d33' : 'rgba(31,77,46,.82)';
     ctx.font = '500 ' + (low ? 22 : 19) + 'px system-ui,sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(Math.ceil(Spot.left) + ' 秒', 24, 66);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(Math.ceil(Spot.left) + ' 秒', 24, 92);
   }
 }
 
@@ -1639,7 +1826,9 @@ window.__fsmExtras = {
  * 所有游戏相关的分支都走查表（curGame()），这里只管「输入 → 分发」。
  * 新增小游戏不用改本文件的任何 if/else。
  * ========================================================== */
-var Input = { keys:{}, pointX:null, down:false, startY:0, touch:false };
+/* mx / my 是鼠标在画布里的逻辑坐标，给 hoverRect() 做悬停反馈用。
+   触屏不更新这两个值 —— 手指离屏后不该留下「鼠标还停在这儿」的假象。 */
+var Input = { keys:{}, pointX:null, down:false, startY:0, touch:false, mx:null, my:null };
 
 function toLogic(cx, cy){
   var r = canvas.getBoundingClientRect();
@@ -1687,9 +1876,11 @@ canvas.addEventListener('pointerdown', function(e){
   if(e.pointerType && e.pointerType !== 'mouse') Input.touch = true;
   try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
 
+  /* 按钮命中一律走 padRect()：手机上把热区撑到 44 CSS 像素。
+     卡片和牌本身已经够大，不扩 —— 扩了会让相邻热区重叠，点错牌。 */
   if(Game.state === 'menu'){
-    if(hitRect(p.x, p.y, musicRect())){ Audio2.toggleMusic(); return; }
-    if(hitRect(p.x, p.y, linkRect())){ Audio2.click(); openRunner(); return; }
+    if(hitRect(p.x, p.y, padRect(musicRect()))){ Audio2.toggleMusic(); return; }
+    if(hitRect(p.x, p.y, padRect(linkRect()))){ Audio2.click(); openRunner(); return; }
     for(var i = 0; i < GAMES.length; i++){
       if(hitRect(p.x, p.y, cardRect(i))){
         selectGame(GAMES[i].id); Audio2.click();
@@ -1698,18 +1889,17 @@ canvas.addEventListener('pointerdown', function(e){
     }
     var opts = optsList(curGame());
     for(var d = 0; d < opts.length; d++){
-      if(hitRect(p.x, p.y, diffRect(d))){
+      if(hitRect(p.x, p.y, padRect(diffRect(d)))){
         selectDiff(opts[d].id); Audio2.click(); return;
       }
     }
   }else if(Game.state === 'result'){
-    if(hitRect(p.x, p.y, musicRect())){ Audio2.toggleMusic(); return; }
-    if(hitRect(p.x, p.y, againRect())){ Audio2.click(); startCurrent(); return; }
-    if(hitRect(p.x, p.y, homeRect())){ Audio2.click(); Game.state = 'menu'; return; }
+    if(hitRect(p.x, p.y, padRect(musicRect()))){ Audio2.toggleMusic(); return; }
+    if(hitRect(p.x, p.y, padRect(againRect()))){ Audio2.click(); startCurrent(); return; }
+    if(hitRect(p.x, p.y, padRect(homeRect()))){ Audio2.click(); Game.state = 'menu'; return; }
   }else{
-    if(hitRect(p.x, p.y, musicRect())){ Audio2.toggleMusic(); return; }
-    var b = backRect(); b.x = 80;
-    if(hitRect(p.x, p.y, b)){ Audio2.click(); Game.state = 'menu'; return; }
+    if(hitRect(p.x, p.y, padRect(musicRect()))){ Audio2.toggleMusic(); return; }
+    if(hitRect(p.x, p.y, padRect(backRect()))){ Audio2.click(); Game.state = 'menu'; return; }
 
     /* 游戏内点击：交给该游戏自己的 tap 处理（在 p3 的注册表里挂上） */
     var gt = curGame();
@@ -1719,6 +1909,7 @@ canvas.addEventListener('pointerdown', function(e){
 
 canvas.addEventListener('pointermove', function(e){
   if(e.pointerType && e.pointerType !== 'mouse') Input.touch = true;
+  else { var pm = toLogic(e.clientX, e.clientY); Input.mx = pm.x; Input.my = pm.y; }
   /* 只有需要拖动的游戏（接橡果）才跟手指，翻牌跟手会误翻 */
   if(Game.state !== 'play' || !curGame().drag) return;
   var p = toLogic(e.clientX, e.clientY);
@@ -1752,11 +1943,13 @@ function drawBanner(){
   var a = clamp(Game.banner / 30, 0, 1);
   ctx.globalAlpha = a;
   ctx.fillStyle = 'rgba(20,40,30,.72)';
-  roundRect(W/2 - 300, 122, 600, 44, 22); ctx.fill();
+  roundRect(W/2 - 300, 116, 600, 54, 26); ctx.fill();
+  /* 15px 在手机上只剩 6px，等于没写。开口提示是告诉孩子怎么玩的，
+     必须看得清，所以放大到 20px 并加粗。 */
   ctx.fillStyle = '#fff';
-  ctx.font = '400 15px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'central';
-  ctx.fillText(bannerText(), W/2, 144);
+  ctx.font = '500 20px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(bannerText(), W/2, 143);
   ctx.globalAlpha = 1;
 }
 
@@ -1778,6 +1971,7 @@ function loop(ts){
     if(gu.update) gu.update(dtF);
   }
 
+  srTick();
   ctx.clearRect(0, 0, W, H);
   if(Game.state === 'menu') drawMenu();
   else if(Game.state === 'result') drawResult();
@@ -1802,9 +1996,10 @@ window.__fsm = {
   Acorn:Acorn, Mem:Mem,
   optsList:optsList, selectGame:selectGame, selectDiff:selectDiff, curGame:curGame,
   startCurrent:startCurrent, endGame:endGame, gridCfg:gridCfg,
+  VIEW:VIEW, padRect:padRect, hoverRect:hoverRect,
   diffName:diffName, optsIndex:optsIndex,
   cardRect:cardRect, diffRect:diffRect, musicRect:musicRect, linkRect:linkRect,
-  againRect:againRect, homeRect:homeRect, memRect:memRect,
+  againRect:againRect, homeRect:homeRect, memRect:memRect, backRect:backRect,
   openRunner:openRunner,
   _step:stepMap
 };
