@@ -133,13 +133,44 @@ function drawResult(){
    分数无限累计 —— 简单档橡果落得慢（vy 2.1）几乎打不死，
    随手刷个几千分之后，另外两档再也破不了纪录，长期激励直接失效。
    一局 30~60 秒，正好是「课间十分钟」里能玩一把的时长。 */
+/* bad = 掉落物里坏东西的比例，penalty = 接到坏东西扣的分。
+   难度不只体现在「落得更快」，还体现在「要分辨的东西更多」——
+   简单档五分之一是坏的，困难档接近一半，孩子的注意力压力完全是两码事。 */
+/* ramp = 局末速度相对开局速度的倍率。
+   只提速度，不提坏东西比例 —— 分辨好坏已经占掉一大半注意力，
+   后期再往上加判断量，孩子会直接放弃分辨、退化成纯碰运气。 */
 var ACORN_CFG = {
-  easy:   { vy:2.1, gap:74, maxNuts:2, lives:5, moveSpd:7.5, time:60 },
-  normal: { vy:3.1, gap:54, maxNuts:3, lives:3, moveSpd:8.5, time:45 },
-  hard:   { vy:4.3, gap:40, maxNuts:4, lives:2, moveSpd:9.5, time:30 }
+  easy:   { vy:2.1, gap:74, maxNuts:2, lives:5, moveSpd:7.5, time:60, bad:0.20, penalty:8,  ramp:1.45 },
+  normal: { vy:3.1, gap:54, maxNuts:3, lives:3, moveSpd:8.5, time:45, bad:0.34, penalty:12, ramp:1.60 },
+  hard:   { vy:4.3, gap:40, maxNuts:4, lives:2, moveSpd:9.5, time:30, bad:0.46, penalty:16, ramp:1.75 }
 };
+/* 好东西只有橡果；坏东西是毛毛虫和毒蘑菇，接到扣分 */
+var BAD_KINDS = ['bug', 'shroom'];
+var RAMP_STEPS = 3;   /* 速度爬升分 3 档，每跨一档闪一次「加速啦！」 */
 var Acorn = { owlX:0, owlVx:0, nuts:[], lives:0, maxLives:0, combo:0, best:0,
-              spawnT:0, hurt:0, catchFx:[], left:0, timeLimit:0 };
+              spawnT:0, hurt:0, catchFx:[], left:0, timeLimit:0, dodged:0,
+              lastBad:false, rampLv:0, flash:0 };
+
+/* 掉落物尺寸按画布短边算。横屏 960×540、竖屏 540×960，两种朝向的短边都是 540，
+   所以两边都是 48，不存在「竖屏道具挤成一团」。
+   写成常数的话，将来改画布比例道具就会跟着失衡。 */
+function itemSize(){ return Math.round(Math.min(W, H) * 0.089); }
+
+/* 局内速度倍率：开局 1，局末爬到 c.ramp。
+   已经掉在半空的也乘这个系数（不是生成时把速度定死），加速是全屏一起变快 ——
+   否则会出现「新掉的飞快、老的还在慢慢飘」这种一眼假的画面。 */
+function acornRamp(){
+  var c = ACORN_CFG[Game.diff];
+  if(!c || Acorn.timeLimit <= 0) return 1;
+  var t = clamp(1 - Acorn.left / Acorn.timeLimit, 0, 1);
+  return 1 + (c.ramp - 1) * t;
+}
+
+/* 结果页副标题：连击之外再报一下躲开几个坏东西，
+   让「躲」这个新动作也有成就感，不然孩子只惦记着接。 */
+function acornExtra(){
+  return '最高连击 ' + Acorn.best + (Acorn.dodged > 0 ? ' · 躲开 ' + Acorn.dodged + ' 个' : '');
+}
 
 function startAcorn(){
   var c = ACORN_CFG[Game.diff];
@@ -148,71 +179,127 @@ function startAcorn(){
   Acorn.lives = c.lives; Acorn.maxLives = c.lives;
   Acorn.combo = 0; Acorn.best = 0;
   Acorn.spawnT = 40; Acorn.hurt = 0;
+  Acorn.dodged = 0; Acorn.lastBad = false;
+  Acorn.rampLv = 0; Acorn.flash = 0;
   Acorn.left = c.time; Acorn.timeLimit = c.time;
   Game.score = 0; Game.banner = 90;
 }
 function updateAcorn(dt){
   var c = ACORN_CFG[Game.diff];
   if(Acorn.hurt > 0) Acorn.hurt -= dt;
+  if(Acorn.flash > 0) Acorn.flash -= dt;
 
   /* 倒计时。dt 是帧步长（dtF = dtSec * 60），除以 60 才是秒 ——
      和找不同 updateSpot 里保持同一套换算。 */
   if(c.time > 0){
     Acorn.left = Math.max(0, Acorn.left - dt / 60);
     if(Acorn.left <= 0){
-      endGame(Game.score, '最高连击 ' + Acorn.best);
+      endGame(Game.score, acornExtra());
       return;
     }
   }
 
+  /* 难度爬升。速度倍率随时间线性走，生成的间隔同步收紧（落得更快 + 来得更密）。
+     猫头鹰也跟着提速，但只跟六成 —— 让它比掉落物慢半拍，
+     「追不上」的紧张感才有，全同步的话就纯粹是手速了。 */
+  var ramp = acornRamp();
+  if(Acorn.timeLimit > 0){
+    var lv = clamp(Math.floor((1 - Acorn.left / Acorn.timeLimit) * RAMP_STEPS), 0, RAMP_STEPS - 1);
+    if(lv > Acorn.rampLv){ Acorn.rampLv = lv; Acorn.flash = 70; }
+  }
+
   /* 移动：键盘或指针目标 */
+  var mspd = c.moveSpd * (1 + (ramp - 1) * 0.6);
   var target = Input.pointX;
   var kb = 0;
   if(Input.keys['arrowleft'] || Input.keys['a']) kb -= 1;
   if(Input.keys['arrowright'] || Input.keys['d']) kb += 1;
   if(kb !== 0){
-    Acorn.owlVx = kb * c.moveSpd;
+    Acorn.owlVx = kb * mspd;
     Input.pointX = null;
   }else if(target !== null && target !== undefined){
     var d = target - Acorn.owlX;
-    Acorn.owlVx = clamp(d * 0.22, -c.moveSpd * 1.6, c.moveSpd * 1.6);
+    Acorn.owlVx = clamp(d * 0.22, -mspd * 1.6, mspd * 1.6);
   }else{
     /* 指数衰减而不是逐帧乘常数：否则 120Hz 上阻尼被算两遍，手感变黏 */
     Acorn.owlVx *= Math.pow(0.82, dt);
   }
   Acorn.owlX = clamp(Acorn.owlX + Acorn.owlVx * dt, 40, W - 40);
 
-  /* 生成橡果 */
+  /* 生成掉落物。坏东西按难度概率混进来，两种各占一半。
+     连续两个都是坏的会很难受（刚躲开又来一个），所以加一条：
+     上一个刚生成的是坏的，这一个就强制给好的，中间有喘息。 */
   Acorn.spawnT -= dt;
   if(Acorn.spawnT <= 0 && Acorn.nuts.length < c.maxNuts){
-    Acorn.nuts.push({ x: rnd(60, W - 60), y: -30, vy: c.vy * rnd(0.88, 1.14), rot: rnd(0, 6.28), vr: rnd(-0.08, 0.08), swing: rnd(0, 6.28) });
-    Acorn.spawnT = c.gap * rnd(0.75, 1.25);
+    var kind = 'acorn';
+    if(!Acorn.lastBad && Math.random() < c.bad){
+      kind = BAD_KINDS[Math.random() < 0.5 ? 0 : 1];
+    }
+    Acorn.lastBad = (kind !== 'acorn');
+    /* vy 存的是这一颗的固有速度，跟 ramp 无关。
+       加速统一在下落循环里乘 —— 乘两次会变成 ramp 的平方，快到没得玩。 */
+    Acorn.nuts.push({
+      x: rnd(60, W - 60), y: -30, vy: c.vy * rnd(0.88, 1.14), kind: kind,
+      rot: kind === 'acorn' ? rnd(0, 6.28) : 0,
+      vr: kind === 'acorn' ? rnd(-0.08, 0.08) : 0,
+      swing: rnd(0, 6.28)
+    });
+    /* 间隔同步收紧。掉落更快的同时也更密，后半段才是真的手忙脚乱。 */
+    Acorn.spawnT = (c.gap / ramp) * rnd(0.75, 1.25);
   }
 
-  /* 橡果下落与判定 */
-  var owlY = 424;
+  /* 下落与判定。owlY 用 H 的比例算：写死 424 的话，竖屏画布高 960，
+     猫头鹰会悬在画面中间，橡果落到一半就看不见了。 */
+  var owlY = Math.round(H * 0.785);
   for(var i = Acorn.nuts.length - 1; i >= 0; i--){
     var n = Acorn.nuts[i];
-    n.y += n.vy * dt; n.rot += n.vr * dt; n.swing += 0.06 * dt;
+    n.y += n.vy * ramp * dt; n.rot += n.vr * dt; n.swing += 0.06 * dt;
     n.x += Math.sin(n.swing) * 0.7 * dt;
-    if(n.y > owlY - 26 && n.y < owlY + 46 && Math.abs(n.x - Acorn.owlX) < 52){
+    var caught = n.y > owlY - 26 && n.y < owlY + 46 && Math.abs(n.x - Acorn.owlX) < 52;
+    /* kind 缺省按好橡果算。少了这个兜底，任何漏写 kind 的掉落物
+       （测试脚本手塞的、将来别的模式生成的）都会被当成坏东西扣分。 */
+    var isGood = (n.kind || 'acorn') === 'acorn';
+    if(caught && isGood){
       Acorn.nuts.splice(i, 1);
       Acorn.combo++;
       if(Acorn.combo > Acorn.best) Acorn.best = Acorn.combo;
       var gain = 10 + Math.min(40, (Acorn.combo - 1) * 3);
       Game.score += gain;
       Audio2.good(Acorn.combo);
-      Acorn.catchFx.push({ x:n.x, y:owlY - 10, life:26, txt:'+' + gain });
+      Acorn.catchFx.push({ x:n.x, y:owlY - 10, life:26, txt:'+' + gain, bad:false });
+      continue;
+    }
+    if(caught){
+      /* 接到坏东西：扣分 + 断连击 + 掉一条命。
+         扣分但不让总分变负 —— 一上来就接到一个变成 -12，孩子看着会懵。 */
+      Acorn.nuts.splice(i, 1);
+      var lost = Math.min(Game.score, c.penalty);
+      Game.score -= lost;
+      Acorn.combo = 0;
+      Acorn.lives--;
+      Acorn.hurt = 26;
+      Audio2.bad();
+      Acorn.catchFx.push({ x:n.x, y:owlY - 10, life:32, txt:'-' + lost, bad:true });
+      if(Acorn.lives <= 0){
+        endGame(Game.score, acornExtra());
+        return;
+      }
       continue;
     }
     if(n.y > H + 30){
       Acorn.nuts.splice(i, 1);
-      Acorn.combo = 0;
-      Acorn.lives--;
-      Acorn.hurt = 18;
-      Audio2.bad();
+      if(isGood){
+        /* 漏掉好橡果才是失误 */
+        Acorn.combo = 0;
+        Acorn.lives--;
+        Acorn.hurt = 18;
+        Audio2.bad();
+      }else{
+        /* 坏东西落地 = 躲对了，只记个数，不奖分也不罚分 */
+        Acorn.dodged++;
+      }
       if(Acorn.lives <= 0){
-        endGame(Game.score, '最高连击 ' + Acorn.best);
+        endGame(Game.score, acornExtra());
         return;
       }
     }
@@ -223,33 +310,78 @@ function updateAcorn(dt){
     if(Acorn.catchFx[f].life <= 0) Acorn.catchFx.splice(f, 1);
   }
 }
+/* 常驻图例：哪个能接、哪个不能碰。
+   banner 几秒就消失了，可「分辨好坏」这件事整局都在用，
+   所以直接把图例画在左上角时间下面，随时能瞄一眼。 */
+function drawAcornLegend(){
+  /* 图例比掉落物小一号：够认清是哪个，又不至于抢戏。
+     掉落物放大后跟着从 24 提到 28，否则图例里的图标和天上掉的对不上号。 */
+  var y = 124, ih = 28, slot = 30, x = 24;
+  ctx.save();
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.font = '500 13px system-ui,sans-serif';
+
+  drawItemImg('acorn', x + slot / 2, y, ih);
+  ctx.fillStyle = 'rgba(43,122,61,.92)';
+  ctx.fillText('接住', x + slot + 2, y);
+  var x2 = x + slot + 2 + ctx.measureText('接住').width + 16;
+
+  drawItemImg('bug', x2 + slot / 2, y, ih);
+  drawItemImg('shroom', x2 + slot + slot / 2, y, ih);
+  ctx.fillStyle = 'rgba(192,57,43,.92)';
+  ctx.fillText('别碰', x2 + slot * 2 + 2, y);
+  ctx.restore();
+}
+
+/* 速度档位：三根递增的小竖杠，亮几根就是第几档。
+   放在剩余时间右边 —— 「还有多久」和「现在多快」本就是一组信息。
+   孩子不看数字，但看得懂「杠变多了就是要变快了」。 */
+function drawSpeedPips(x, y, lv){
+  ctx.save();
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(31,77,46,.62)';
+  ctx.font = '400 12px system-ui,sans-serif';
+  ctx.fillText('速度', x, y);
+  var bx = x + ctx.measureText('速度').width + 7;
+  for(var i = 0; i < RAMP_STEPS; i++){
+    var bh = 6 + i * 4;
+    ctx.fillStyle = i <= lv ? (lv >= 2 ? '#d0503f' : '#d8952a') : 'rgba(0,0,0,.16)';
+    roundRect(bx + i * 8, y - bh / 2, 5, bh, 2); ctx.fill();
+  }
+  ctx.restore();
+}
+
 function drawAcorn(){
   drawBackdrop(Game.time * 60, 0);
+  var owlY = Math.round(H * 0.785);
 
   /* 接取范围提示 */
   ctx.strokeStyle = 'rgba(255,255,255,.35)';
   ctx.setLineDash([6, 6]); ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(Acorn.owlX - 52, 468); ctx.lineTo(Acorn.owlX + 52, 468);
+  ctx.moveTo(Acorn.owlX - 52, owlY + 44); ctx.lineTo(Acorn.owlX + 52, owlY + 44);
   ctx.stroke(); ctx.setLineDash([]);
 
-  /* 橡果 */
+  /* 掉落物。坏的画在稍微下面一点的阴影里，颜色本来就跳，
+     再加一层淡光晕帮孩子在乱糟糟的背景里一眼认出来。 */
   for(var i = 0; i < Acorn.nuts.length; i++){
     var n = Acorn.nuts[i];
-    ctx.save();
-    ctx.translate(n.x, n.y); ctx.rotate(n.rot);
-    ctx.fillStyle = '#a9703f';
-    ctx.beginPath(); ctx.ellipse(0, 0, 11, 14, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#8a5a30';
-    ctx.beginPath(); ctx.ellipse(-4, -3, 3.5, 6, 0.4, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#6b4522';
-    roundRect(-8, -18, 16, 7, 3); ctx.fill();
-    ctx.fillRect(-1.5, -22, 3, 6);
-    ctx.restore();
+    var h = itemSize();
+    if(n.kind !== 'acorn'){
+      var w = h * ITEM_AR[n.kind];
+      ctx.save();
+      ctx.fillStyle = 'rgba(210,60,50,.16)';
+      ctx.beginPath(); ctx.ellipse(n.x, n.y, w * 0.82, h * 0.62, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      /* 坏东西不自转，用摆动代替，看着像虫子在爬 / 蘑菇在晃 */
+      drawItemImg(n.kind, n.x, n.y, h, Math.sin(n.swing) * 0.16);
+    }else{
+      drawItemImg('acorn', n.x, n.y, h, n.rot);
+    }
   }
 
   /* 涂涂（滑翔姿态） */
-  var oy = 424 + Math.sin(Game.time * 4) * 3;
+  var oy = owlY + Math.sin(Game.time * 4) * 3;
   ctx.save();
   var tilt = clamp(Acorn.owlVx * 0.02, -0.28, 0.28);
   ctx.translate(Acorn.owlX, oy); ctx.rotate(tilt);
@@ -263,12 +395,13 @@ function drawAcorn(){
   ctx.restore();
   ctx.globalAlpha = 1;
 
-  /* 飘字 */
+  /* 飘字。扣分是红的、字号也大一号 —— 接错了要一眼看到后果 */
   for(var f = 0; f < Acorn.catchFx.length; f++){
     var fx = Acorn.catchFx[f];
-    ctx.globalAlpha = clamp(fx.life / 26, 0, 1);
-    ctx.fillStyle = '#1f4d2e';
-    ctx.font = '500 18px system-ui,sans-serif';
+    var lf = fx.bad ? 32 : 26;
+    ctx.globalAlpha = clamp(fx.life / lf, 0, 1);
+    ctx.fillStyle = fx.bad ? '#c0392b' : '#1f4d2e';
+    ctx.font = '500 ' + (fx.bad ? 21 : 18) + 'px system-ui,sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(fx.txt, fx.x, fx.y);
     ctx.globalAlpha = 1;
@@ -276,6 +409,7 @@ function drawAcorn(){
 
   drawTopBar('接橡果');
   drawHearts(Acorn.lives, Acorn.maxLives);
+  drawAcornLegend();
 
   /* 剩余时间。画在左上角、顶栏按钮下方（y=92），
      再往上会压到音乐/返回两个按钮上。最后 10 秒变红加大，孩子能感到紧迫。 */
@@ -284,7 +418,27 @@ function drawAcorn(){
     ctx.fillStyle = low ? '#d33' : 'rgba(31,77,46,.82)';
     ctx.font = '500 ' + (low ? 22 : 19) + 'px system-ui,sans-serif';
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.fillText(Math.ceil(Acorn.left) + ' 秒', 24, 92);
+    var tTxt = Math.ceil(Acorn.left) + ' 秒';
+    ctx.fillText(tTxt, 24, 92);
+    drawSpeedPips(24 + ctx.measureText(tTxt).width + 14, 92, Acorn.rampLv);
+  }
+
+  /* 跨档闪一次「加速啦！」。没这个提示的话速度是悄悄爬上去的，
+     孩子只会觉得「怎么突然接不到了」，分不清是自己慢了还是游戏变难了。 */
+  if(Acorn.flash > 0){
+    var k = clamp(1 - Acorn.flash / 70, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = clamp(Acorn.flash / 24, 0, 1);
+    ctx.translate(W / 2, H * 0.30);
+    ctx.scale(1 + k * 0.3, 1 + k * 0.3);
+    ctx.font = '700 34px system-ui,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 5; ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(255,255,255,.9)';
+    ctx.strokeText('加速啦！', 0, 0);
+    ctx.fillStyle = '#c0392b';
+    ctx.fillText('加速啦！', 0, 0);
+    ctx.restore();
   }
 
   if(Acorn.combo >= 3){
@@ -476,11 +630,16 @@ function startMemory(){
   }
   Mem.cards = deck.map(function(k){ return { k:k, open:false, done:false, anim:0 }; });
   Mem.first = -1; Mem.flips = 0; Mem.matched = 0; Mem.lockT = 0; Mem.el = 0;
-  var maxW = W - 120, maxH = 300;
+  var maxW = W - 120;
+  /* 竖屏 H=960，纵向空间大，但 W=540 比横屏的 960 窄得多。Mem.cw 必须先按
+     W 收紧（横屏是 110 上限；竖屏 4 列只 95，再 5 列就 75），Mem.ch 也按 H
+     给的余量收紧。Mem.y0 在竖屏下推到 200，给顶栏（100px）+ 顶部副标（28px）
+     留空，避免 4 行棋盘压到 140+4*ch+3*8。 */
+  var maxH = VIEW.portrait ? (H - 380) : 300;
   Mem.cw = Math.min(110, Math.floor(maxW / Mem.cols) - 10);
   Mem.ch = Math.min(96, Math.floor(maxH / Mem.rows) - 8);
   Mem.x0 = (W - (Mem.cw + 10) * Mem.cols + 10) / 2;
-  Mem.y0 = 150;
+  Mem.y0 = VIEW.portrait ? 200 : 150;
   Game.score = 0; Game.banner = 90;
 }
 function memRect(i){
@@ -567,7 +726,7 @@ function drawMemory(){
 (function(){
   var impl = {
     acorn:  { start:startAcorn,   update:updateAcorn,   draw:drawAcorn,
-              banner:'← → 或手指拖动，移动涂涂接橡果',
+              banner:'← → 或手指拖动，接橡果，躲开毛毛虫和毒蘑菇',
               tap:function(x, y){ Input.pointX = x; } },
     memory: { start:startMemory,  update:updateMemory,  draw:drawMemory,
               banner:'点开两张，一样的动物就配对成功',

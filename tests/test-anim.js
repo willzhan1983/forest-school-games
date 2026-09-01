@@ -131,14 +131,19 @@ async function diffSnap(page, x, y, w, h) {
   await page.evaluate(() => {
     const A = window.__fsm.Acorn;
     A.nuts.length = 0;
-    A.nuts.push({ x: A.owlX, y: 410, vy: 0.4, rot: 0, vr: 0, swing: 0 });
+    /* spawnT 顶到很大：否则等待期间又掉一颗被接住，飘字数永远归不了零。
+       这个用例测的是「旧的会消失」，不是「不再产生新的」。 */
+    A.spawnT = 1e9;
+    A.nuts.push({ x: A.owlX, y: 410, vy: 0.4, rot: 0, vr: 0, swing: 0, kind: 'acorn' });
   });
-  await wait(400);
+  /* 飘字生命 26 帧约 430ms。原来等 400ms 采样，正好卡在存活/消失的边界上，
+     帧率抖一下就翻车。往前提到 150ms，稳稳落在「还在」。 */
+  await wait(150);
   const fxAfter = await page.evaluate(() => window.__fsm.Acorn.catchFx.length);
-  await wait(1200);
+  await wait(1400);
   const fxGone = await page.evaluate(() => window.__fsm.Acorn.catchFx.length);
   rec('A4', '接取飘字出现后自行消失（不残留）', fxAfter >= 1 && fxGone === 0,
-    `接住后=${fxAfter} 1.2秒后=${fxGone}`);
+    `接住后=${fxAfter} 1.4秒后=${fxGone}`);
 
   /* ---------- A5 接橡果：受伤闪烁不导致角色消失 ---------- */
   await enter('acorn');

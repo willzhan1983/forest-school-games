@@ -14,9 +14,25 @@
  * p3 / p4 一个字没改 —— 主循环、点击分发、开场横幅都是按 id 查表的。
  * ========================================================== */
 
-/* 面板几何：960 宽里放两幅 444 的图，左右各留 24，中间隔 24 */
+/* 面板几何。横屏 960 宽里放两幅 444 的图，左右各留 24、中间隔 24；
+   竖屏 540 宽纵向放两幅（左 + 12 边距），w=W-24=516，h=(H-184)/2≈388。
+   都在 viewport 变更时按新 W/H 重算（不是常量），竖屏 W=540 时变成上下两幅。 */
 var SPOT_W = 444, SPOT_H = 396, SPOT_TOP = 92;
-function spotPanel(i){ return { x: 24 + i * (SPOT_W + 24), y: SPOT_TOP, w: SPOT_W, h: SPOT_H }; }
+function spotGeom(){
+  if(VIEW.portrait){
+    var w = W - 24, h = (H - 184) >> 1;  /* 上 92 + 间隔 0 + 下 92 = 184，剩余分两份 */
+    return { w:w, h:h, top:92, gap:0, x:12, sideBySide:false };
+  }
+  return { w:444, h:396, top:92, gap:24, x:24, sideBySide:true };
+}
+function spotPanel(i){
+  var g = spotGeom();
+  if(g.sideBySide){
+    return { x: g.x + i * (g.w + g.gap), y: g.top, w: g.w, h: g.h };
+  }
+  /* 竖屏：上 + 下 */
+  return { x: g.x, y: g.top + i * (g.h + g.gap), w: g.w, h: g.h };
+}
 
 /* 难度：差异数 / 场景元素数 / 点错机会 / 限时（秒，0=不限）/ 计分基数 */
 var SPOT_CFG = {
@@ -163,16 +179,19 @@ function drawSpotProp(p, ox, oy){
 
 /* ---------- 场景生成 ---------- */
 /* 槽位网格：天空 2 行 × 6 列，地面 3 行 × 6 列，共 30 个。
-   生成时随机取 N 个，天然避免元素叠在一起。 */
+   生成时随机取 N 个，天然避免元素叠在一起。
+   槽位按当前 SPOT_W 自适应，竖屏下面板变宽时槽位也分散。 */
 function spotSlots(){
   var s = [], cols = 6, c, r;
-  var skyY = [44, 104], gndY = [252, 312, 366];
+  var pg = spotGeom();
+  var slotStepX = (pg.w - 74) / cols;
+  var skyY = [44, 104], gndY = [Math.max(252, pg.h - 144), Math.max(312, pg.h - 84), Math.max(366, pg.h - 30)];
   for(r = 0; r < skyY.length; r++)
     for(c = 0; c < cols; c++)
-      s.push({ x: 37 + c * 74 + rnd(-14, 14), y: skyY[r] + rnd(-9, 9), zone: 'sky' });
+      s.push({ x: 37 + c * slotStepX + rnd(-14, 14), y: skyY[r] + rnd(-9, 9), zone: 'sky' });
   for(r = 0; r < gndY.length; r++)
     for(c = 0; c < cols; c++)
-      s.push({ x: 37 + c * 74 + rnd(-16, 16), y: gndY[r] + rnd(-10, 10), zone: 'gnd' });
+      s.push({ x: 37 + c * slotStepX + rnd(-16, 16), y: gndY[r] + rnd(-10, 10), zone: 'gnd' });
   return s;
 }
 
@@ -224,8 +243,9 @@ function startSpot(){
     }else if(kind === 'move'){
       var dx = (Math.random() < 0.5 ? -1 : 1) * rnd(30, 44);
       var dy = (Math.random() < 0.5 ? -1 : 1) * rnd(24, 36);
-      q.x = clamp(q.x + dx, 36, SPOT_W - 36);
-      q.y = clamp(q.y + dy, 30, SPOT_H - 14);
+      var _pg = spotGeom();
+      q.x = clamp(q.x + dx, 36, _pg.w - 36);
+      q.y = clamp(q.y + dy, 30, _pg.h - 14);
       rx = q.x; ry = q.y;
     }else if(kind === 'flip'){
       q.f = -q.f;

@@ -56,9 +56,12 @@
 /* ============================================================
  * 1. 基础常量与画布
  * ========================================================== */
+/* 逻辑画布尺寸。横屏 16:9 (960×540)，竖屏 9:16 (540×960)——
+ * 这是 PR #12 起的核心改动。竖屏再死守 16:9 的话画布只剩 1/4 屏幕，
+ * 菜单和游戏元素都被压扁到没法玩。横屏坐标按 (W,H) 自然映射游戏元素位置
+ * （owl W/2, nut rnd(60,W-60)），竖屏相当于把 W/H 角色对调。 */
 var W = 960, H = 540;
-/* 当前视口状态。s = 逻辑坐标 → 屏幕 CSS 像素的缩放比，
-   padRect() 靠它把按钮热区撑到 44px；竖屏提示和布局也读它。 */
+var W_BASE = 960, H_BASE = 540;  /* 横屏基准，用于字号/图标尺寸的"原始"参考 */
 var VIEW = { s:1, portrait:false, dpr:1 };
 var canvas = document.getElementById('game');
 var ctx = canvas.getContext('2d');
@@ -68,6 +71,11 @@ var tipClose = document.getElementById('tipClose');
 function resize(){
   var dpr = Math.min(window.devicePixelRatio || 1, 2);
   var availW = window.innerWidth, availH = window.innerHeight;
+  /* 横屏用 960×540，竖屏切 540×960。1.15 是宽松比例阈值（短边=长边就触发）
+     —— 之前是给 1280×720 那种"接近横屏但略高"留余地的，逻辑不变。 */
+  var portrait = (availH > availW * 1.15);
+  W = portrait ? 540 : W_BASE;
+  H = portrait ? 960 : H_BASE;
   var s = Math.min(availW / W, availH / H);
   s = Math.max(0.08, Math.min(s, 1.6));
   var cssW = Math.round(W * s), cssH = Math.round(H * s);
@@ -75,11 +83,11 @@ function resize(){
   canvas.style.height = cssH + 'px';
   canvas.width = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
+  /* transform 用当前 W/H 而非 BASE——竖屏下是 540×960 坐标空间 */
   ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
   ctx.imageSmoothingEnabled = true;
-  VIEW.s = s; VIEW.dpr = dpr; VIEW.portrait = (availH > availW * 1.15);
-  /* 竖屏提示：非遮挡式，4 秒自动隐藏 */
-  if(availH > availW * 1.15 && availW < 760){
+  VIEW.s = s; VIEW.dpr = dpr; VIEW.portrait = portrait;
+  if(portrait && availW < 760){
     tipEl.style.display = 'flex';
     clearTimeout(resize._t);
     resize._t = setTimeout(function(){ tipEl.style.display = 'none'; }, 4000);
@@ -137,6 +145,10 @@ function padRect(r, minCss){
 
 /* 森林主题背景（天空 + 远山 + 草地） */
 function drawBackdrop(t, night){
+  /* 草地线、远山基线等都按 H 比例算。横屏 H=540 草地=0.74=400；竖屏 H=960
+     草地=710（猫头鹰、橡果下落的地面）。之前 400 是硬编码，竖屏会留 560 像素的
+     纯色块在草地下边，特别丑。 */
+  var GROUND = H * 0.74;
   var g = ctx.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, night > 0.3 ? '#5d7fa8' : '#bfe8f7');
   g.addColorStop(0.62, night > 0.3 ? '#8aa3c0' : '#e8f6ec');
@@ -144,23 +156,25 @@ function drawBackdrop(t, night){
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 
-  /* 远山 */
+  /* 远山：基线放在草地线略上 */
+  var MTN_BASE = GROUND - 70;
   ctx.fillStyle = night > 0.3 ? 'rgba(70,92,120,.55)' : 'rgba(150,200,170,.55)';
   ctx.beginPath();
-  ctx.moveTo(0, 330);
+  ctx.moveTo(0, MTN_BASE);
   for(var i = 0; i <= 8; i++){
-    ctx.lineTo(i * 120, 330 - Math.sin(i * 1.1) * 44 - 20);
+    ctx.lineTo(i * (W / 8), MTN_BASE - Math.sin(i * 1.1) * 44 - 20);
   }
   ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
 
   /* 远处树影 */
+  var TREE_Y = GROUND - 48;
   ctx.fillStyle = night > 0.3 ? 'rgba(52,78,64,.45)' : 'rgba(120,180,130,.42)';
   for(var k = 0; k < 7; k++){
     var tx = ((k * 167 + t * 6) % (W + 160)) - 80;
     ctx.beginPath();
-    ctx.ellipse(tx, 352, 52, 40, 0, 0, Math.PI * 2);
+    ctx.ellipse(tx, TREE_Y, 52, 40, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillRect(tx - 6, 352, 12, 46);
+    ctx.fillRect(tx - 6, TREE_Y, 12, 46);
   }
 
   /* 云 */
@@ -175,14 +189,14 @@ function drawBackdrop(t, night){
     ctx.fill();
   }
 
-  /* 草地 */
+  /* 草地：基线 GROUND，上面起伏 7 像素、下面填到 H。 */
   ctx.fillStyle = night > 0.3 ? '#3f6b3a' : '#7fc96a';
-  ctx.fillRect(0, 400, W, H - 400);
+  ctx.fillRect(0, GROUND, W, H - GROUND);
   ctx.fillStyle = night > 0.3 ? '#4a7a44' : '#8fd06a';
   ctx.beginPath();
-  ctx.moveTo(0, 408);
+  ctx.moveTo(0, GROUND + 8);
   for(var q = 0; q <= 16; q++){
-    ctx.lineTo(q * 60, 400 + Math.sin(q * 0.9) * 7);
+    ctx.lineTo(q * (W / 16), GROUND + Math.sin(q * 0.9) * 7);
   }
   ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
 
