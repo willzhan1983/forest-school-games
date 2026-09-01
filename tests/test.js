@@ -1,7 +1,9 @@
 const puppeteer = require('puppeteer-core');
+const path = require('path');
+const fs = require('fs');
 
-const URL = process.env.TARGET_URL || 'http://127.0.0.1:8931/forest-recess.html';
-const SRC = process.env.TARGET_SRC || '/tmp/mg/forest-recess.html';
+const URL = process.env.TARGET_URL || 'http://127.0.0.1:8931/index.html';
+const SRC = process.env.TARGET_SRC || path.resolve(__dirname, '..', 'index.html');
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const W = 960, H = 540;
 
@@ -20,6 +22,17 @@ async function clickAt(page, lx, ly) {
 }
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 const center = (r) => [r.x + r.w / 2, r.y + r.h / 2];
+
+/* 菜单几何随 GAMES.length / 当前游戏的选择器变化，
+   所以卡片和档位矩形一律「用时再算」，不在开头缓存一份到处用。 */
+const getCards = (page) => page.evaluate(() => {
+  const f = window.__fsm;
+  return f.GAMES.map((_, i) => f.cardRect(i));
+});
+const getOpts = (page) => page.evaluate(() => {
+  const f = window.__fsm;
+  return f.optsList(f.curGame()).map((_, i) => f.diffRect(i));
+});
 
 async function sample(page, x, y, w, h) {
   return await page.evaluate(([x, y, w, h]) => {
@@ -54,6 +67,11 @@ async function sample(page, x, y, w, h) {
   await page.waitForFunction('window.__fsm && window.__fsm.Game', { timeout: 20000 });
   await wait(1200);
 
+  /* 菜单里「接橡果」是卡片 0、「记忆翻牌」是卡片 1。
+     松鼠冲刺（dash）已在本次改版中删除 —— 玩法和《放学跑酷》重复。 */
+  const IDX_ACORN = await page.evaluate(() => window.__fsm.GAMES.findIndex(g => g.id === 'acorn'));
+  const IDX_MEM = await page.evaluate(() => window.__fsm.GAMES.findIndex(g => g.id === 'memory'));
+
   /* ---- T1 加载无错误 ---- */
   rec('T1', '页面加载零运行时错误', errs.length === 0 && warns.length === 0,
     (errs.concat(warns)).join(' | ') || '0 error');
@@ -66,36 +84,30 @@ async function sample(page, x, y, w, h) {
   rec('T2', 'canvas 尺寸与 DPR 缩放', cv.w > 0 && Math.abs(cv.cssW / cv.cssH - 960 / 540) < 0.02,
     `backing ${cv.w}x${cv.h}  css ${cv.cssW}x${cv.cssH}`);
 
-  /* ---- T3 角色立绘加载 ---- */
-  const imgs = await page.evaluate(() => {
-    const s = window.__fsm;
-    return { cat: !!document.querySelector('canvas') && (window.CAT_IMG ? CAT_IMG.complete && CAT_IMG.naturalWidth : -1), owl: -1 };
-  });
-  const imgState = await page.evaluate(() => {
-    /* CAT_IMG/OWL_IMG 在 IIFE 内，用 Image 全局扫描不可行；改为检测画面里是否出现角色像素 */
-    return true;
-  });
-
-  /* ---- T3 菜单页像素：三张卡片都画出来了 ---- */
-  const cardRects = await page.evaluate(() => [0, 1, 2].map(i => window.__fsm.cardRect(i)));
+  /* ---- T3 菜单页像素：所有卡片都画出来了 ---- */
+  const cardRects = await getCards(page);
   let cardOk = true, cardDetail = [];
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < cardRects.length; i++) {
     const r = cardRects[i];
     const s = await sample(page, r.x + 10, r.y + 10, r.w - 20, 60);
     cardDetail.push(`card${i}:lum=${s.lum},colors=${s.colors}`);
     if (s.colors < 4) cardOk = false;
   }
   const bgS = await sample(page, 20, 500, 60, 30);
-  rec('T3', '菜单三张游戏卡片已渲染', cardOk, cardDetail.join(' ') + ` (空白对照 colors=${bgS.colors})`);
+  rec('T3', '菜单所有游戏卡片已渲染', cardOk && cardRects.length === 2,
+    cardDetail.join(' ') + ` (空白对照 colors=${bgS.colors})  卡片数=${cardRects.length}`);
 
-  /* ---- T4 难度按钮：点击切换 ---- */
-  const diffRects = await page.evaluate(() => [0, 1, 2].map(i => window.__fsm.diffRect(i)));
+  /* ---- T4 难度按钮：点击切换 ----
+     接橡果走 DIFFS（简单/普通/困难），键是 fsm_diff_acorn。 */
+  await page.evaluate(() => window.__fsm.selectGame('acorn'));
+  await wait(200);
+  const diffRects = await getOpts(page);
   await clickAt(page, ...center(diffRects[2]));
   await wait(250);
   const dHard = await page.evaluate(() => window.__fsm.Game.diff);
-  const lsDiff = await page.evaluate(() => localStorage.getItem('fsm_diff'));
-  rec('T4', '难度切换生效并持久化', dHard === 'hard' && lsDiff === 'hard',
-    `Game.diff=${dHard}  localStorage.fsm_diff=${lsDiff}`);
+  const lsDiff = await page.evaluate(() => localStorage.getItem('fsm_diff_acorn'));
+  rec('T4', '难度切换生效并持久化（按游戏分键）', dHard === 'hard' && lsDiff === 'hard',
+    `Game.diff=${dHard}  localStorage.fsm_diff_acorn=${lsDiff}`);
 
   /* ---- T5 难度按钮视觉高亮变化 ---- */
   await clickAt(page, ...center(diffRects[0])); await wait(300);
@@ -125,7 +137,7 @@ async function sample(page, x, y, w, h) {
     `开态亮度=${sOn.lum} 关态亮度=${sOff.lum} 差=${Math.abs(sOn.lum - sOff.lum).toFixed(1)}`);
 
   /* ---- T8 启动「接橡果」 ---- */
-  await clickAt(page, ...center(cardRects[0]));
+  await clickAt(page, ...center(cardRects[IDX_ACORN]));
   await wait(600);
   const st8 = await page.evaluate(() => ({ s: window.__fsm.Game.state, g: window.__fsm.Game.gameId, lives: window.__fsm.Acorn.lives }));
   rec('T8', '点击卡片启动接橡果', st8.s === 'play' && st8.g === 'acorn' && st8.lives === 5,
@@ -165,7 +177,6 @@ async function sample(page, x, y, w, h) {
     `state=${st11.s} lives=${st11.lives}`);
 
   /* ---- T12 结算页最高分写入 localStorage（按难度分键） ----
-     键从 fsm_best_acorn 改成 fsm_best_acorn_<diff>。
      T5 末尾已把难度复位到 easy，T8 用 easy 启动接橡果，所以此刻是 _easy。
      同时多验一条：_hard 此刻必须仍是 null —— 证明三档真的隔离了，
      否则「改了 key 但仍然串档」这种假修复过不了。 */
@@ -190,46 +201,8 @@ async function sample(page, x, y, w, h) {
   const st14 = await page.evaluate(() => window.__fsm.Game.state);
   rec('T14', '游戏中点返回键回菜单', st14 === 'menu', `state=${st14}`);
 
-  /* ---- T15 启动「松鼠冲刺」+ 跳跃/冲刺 ---- */
-  await clickAt(page, ...center(cardRects[1])); await wait(600);
-  const st15a = await page.evaluate(() => ({ s: window.__fsm.Game.state, g: window.__fsm.Game.gameId }));
-  /* 起跳/落地要按帧等，别硬 sleep：跳跃滞空约 37 帧 */
-  const waitGrounded = async () => {
-    for (let i = 0; i < 40; i++) {
-      if (await page.evaluate(() => window.__fsm.Dash.grounded)) return true;
-      await wait(100);
-    }
-    return false;
-  };
-  await waitGrounded();
-  const yA = await page.evaluate(() => window.__fsm.Dash.y);
-  await page.keyboard.press('Space'); await wait(150);
-  const yB = await page.evaluate(() => window.__fsm.Dash.y);
-  /* 触屏：右下「冲刺」按钮。
-     旧测试点的是 (480,420)，旧逻辑按上下半屏分、那里算冲刺；
-     改成按钮之后那里变成「跳」，所以这里改成点真正的冲刺按钮。 */
-  const tb = await page.evaluate(() => window.__fsm.TouchBtn);
-  const dashBefore = await page.evaluate(() => window.__fsm.Dash.dashT);
-  await clickAt(page, tb.burst.x, tb.burst.y); await wait(150);
-  const dashAfter = await page.evaluate(() => window.__fsm.Dash.dashT);
-  /* 触屏：左下「跳」按钮。旧逻辑下点角色（整个在下半屏）触发的是冲刺 —— 就是这条要抓的 bug */
-  await waitGrounded();
-  const yC = await page.evaluate(() => window.__fsm.Dash.y);
-  await clickAt(page, tb.jump.x, tb.jump.y); await wait(150);
-  const yD = await page.evaluate(() => window.__fsm.Dash.y);
-  rec('T15', '松鼠冲刺：键盘与触屏的跳跃/冲刺映射均正确',
-    st15a.s === 'play' && st15a.g === 'dash' && yB < yA && dashAfter > dashBefore && yD < yC,
-    `state=${st15a.s} gameId=${st15a.g}  空格 y ${Math.round(yA)}->${Math.round(yB)}` +
-    `  冲刺按钮 dashT ${dashBefore}->${dashAfter}  跳按钮 y ${Math.round(yC)}->${Math.round(yD)}`);
-
-  /* ---- T16 冲刺障碍生成 ---- */
-  await wait(1500);
-  const obs = await page.evaluate(() => window.__fsm.Dash.obs.length);
-  rec('T16', '松鼠冲刺障碍持续生成', obs > 0, `obs=${obs}`);
-
   /* ---- T17 记忆翻牌：配对成功 ---- */
-  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; });
-  await clickAt(page, ...center(cardRects[2])); await wait(700);
+  await clickAt(page, ...center(cardRects[IDX_MEM])); await wait(700);
   const memInfo = await page.evaluate(() => {
     const M = window.__fsm.Mem;
     return { n: M.cards.length, cols: M.cols, rows: M.rows, state: window.__fsm.Game.state };
@@ -248,7 +221,7 @@ async function sample(page, x, y, w, h) {
   await clickAt(page, ...center(rB)); await wait(900);
   const matched = await page.evaluate(() => window.__fsm.Mem.matched);
   rec('T17', '记忆翻牌：同图案配对成功', memInfo.n === 12 && matched === 2,
-    `cards=${memInfo.n}(简单4x3) cols=${memInfo.cols} rows=${memInfo.rows}  matched=${matched}`);
+    `cards=${memInfo.n}(默认4x3) cols=${memInfo.cols} rows=${memInfo.rows}  matched=${matched}`);
 
   /* ---- T18 记忆翻牌：全部配对后结算 ---- */
   await page.evaluate(async () => {
@@ -279,9 +252,86 @@ async function sample(page, x, y, w, h) {
   const st19 = await page.evaluate(() => window.__fsm.Game.state);
   rec('T19', '结算页「换个游戏」回菜单', st19 === 'menu', `state=${st19}`);
 
+  /* ---- T30 翻牌棋盘尺寸选择器：四档都真的生成对应张数 ----
+     翻牌没有「难度」概念，牌多就难，所以菜单上直接给 4×3/4×4/5×4/6×4。
+     这里逐档实开一局，验证牌数 = cols × rows，而不是只换了个按钮标签。 */
+  await page.evaluate(() => window.__fsm.selectGame('memory'));
+  await wait(200);
+  const gridRects = await getOpts(page);
+  const expect = [12, 16, 20, 24];
+  const gotGrids = [];
+  let gridOk = gridRects.length === 4;
+  for (let i = 0; i < gridRects.length; i++) {
+    await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('memory'); });
+    await wait(150);
+    await clickAt(page, ...center(gridRects[i])); await wait(200);
+    await clickAt(page, ...center(cardRects[IDX_MEM])); await wait(500);
+    const g = await page.evaluate(() => ({
+      n: window.__fsm.Mem.cards.length,
+      cols: window.__fsm.Mem.cols,
+      rows: window.__fsm.Mem.rows,
+      diff: window.__fsm.Game.diff
+    }));
+    gotGrids.push(`${g.diff}:${g.cols}x${g.rows}=${g.n}`);
+    if (g.n !== expect[i]) gridOk = false;
+    await page.evaluate(() => { window.__fsm.Game.state = 'menu'; });
+    await wait(150);
+  }
+  rec('T30', '翻牌棋盘尺寸四档都生成对应张数', gridOk,
+    gotGrids.join('  ') + `  期望 ${expect.join('/')}`);
+
+  /* ---- T31 档位按游戏隔离：翻牌选 6×4 不会污染接橡果 ----
+     两游戏共用一把 localStorage 钥匙的话，在翻牌里选完 6×4 再切到接橡果，
+     ACORN_CFG['g64'] 会是 undefined，一进游戏就崩。 */
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('memory'); });
+  await wait(150);
+  await clickAt(page, ...center(gridRects[3])); await wait(250);   // 6×4
+  await page.evaluate(() => window.__fsm.selectGame('acorn'));
+  await wait(200);
+  const iso = await page.evaluate(() => ({
+    cur: window.__fsm.Game.diff,
+    memLs: localStorage.getItem('fsm_diff_memory'),
+    acornLs: localStorage.getItem('fsm_diff_acorn')
+  }));
+  let isoOk = iso.cur !== 'g64' && iso.memLs === 'g64';
+  /* 接橡果的档位必须在 DIFFS 里，且能真的开起来不崩 */
+  await clickAt(page, ...center(cardRects[IDX_ACORN])); await wait(600);
+  const isoRun = await page.evaluate(() => ({ s: window.__fsm.Game.state, lives: window.__fsm.Acorn.lives }));
+  isoOk = isoOk && isoRun.s === 'play' && isoRun.lives > 0;
+  rec('T31', '档位按游戏隔离（翻牌 6×4 不污染接橡果）', isoOk,
+    `切回接橡果后 diff=${iso.cur}  fsm_diff_memory=${iso.memLs}  fsm_diff_acorn=${iso.acornLs}  开局 state=${isoRun.s} lives=${isoRun.lives}`);
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; });
+  await wait(200);
+
+  /* ---- T32 表驱动：每个游戏都挂齐五件套 ----
+     主循环 / 输入 / 横幅全部改为按 id 查表分发，新增游戏不用再改 if/else。
+     这条保证注册表没漏挂 —— 漏一个就是「点了没反应」或「白屏」。 */
+  const reg = await page.evaluate(() => window.__fsm.GAMES.map(g => ({
+    id: g.id, start: typeof g.start, update: typeof g.update, draw: typeof g.draw,
+    tap: typeof g.tap, banner: (g.banner || '').slice(0, 10), mode: g.mode
+  })));
+  const regOk = reg.length > 0 && reg.every(r =>
+    r.start === 'function' && r.update === 'function' && r.draw === 'function' &&
+    r.tap === 'function' && r.banner.length > 0 && (r.mode === 'level' || r.mode === 'grid'));
+  rec('T32', '每个游戏都挂齐 start/update/draw/tap/banner', regOk,
+    reg.map(r => `${r.id}[${r.mode}]`).join(' '));
+
+  /* ---- T33 结算页档位名随棋盘尺寸变化（不是永远显示「简单」） ---- */
+  await page.evaluate(() => { window.__fsm.selectGame('memory'); window.__fsm.selectDiff('g64'); });
+  await wait(200);
+  const nameGrid = await page.evaluate(() => window.__fsm.diffName());
+  await page.evaluate(() => { window.__fsm.selectGame('acorn'); window.__fsm.selectDiff('hard'); });
+  await wait(200);
+  const nameDiff = await page.evaluate(() => window.__fsm.diffName());
+  rec('T33', '档位名随选择器变化（翻牌显示尺寸 / 接橡果显示难度）',
+    nameGrid === '6 × 4' && nameDiff === '困 难',
+    `翻牌6×4 -> "${nameGrid}"  接橡果困难 -> "${nameDiff}"`);
+
   /* ---- T20 键盘：数字键选中 + 空格开始 + Esc 返回 ----
      菜单设计是「数字键选中（卡片高亮）→ 空格确认开始」，给小朋友一个确认步骤，
      避免手快按错直接进游戏。底部提示条已写明「空格 确认」。 */
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
+  await wait(200);
   await page.keyboard.press('Digit2'); await wait(400);
   const st20a = await page.evaluate(() => ({ s: window.__fsm.Game.state, g: window.__fsm.Game.gameId }));
   await page.keyboard.press('Space'); await wait(500);
@@ -289,7 +339,7 @@ async function sample(page, x, y, w, h) {
   await page.keyboard.press('Escape'); await wait(400);
   const st20c = await page.evaluate(() => window.__fsm.Game.state);
   rec('T20', '键盘 数字键选中 + 空格开始 + Esc 返回',
-    st20a.s === 'menu' && st20a.g === 'dash' && st20b.s === 'play' && st20b.g === 'dash' && st20c === 'menu',
+    st20a.s === 'menu' && st20a.g === 'memory' && st20b.s === 'play' && st20b.g === 'memory' && st20c === 'menu',
     `按2 -> ${st20a.s}/${st20a.g}  空格 -> ${st20b.s}/${st20b.g}  Esc -> ${st20c}`);
 
   /* ---- T21 竖屏不黑屏 ---- */
@@ -303,7 +353,6 @@ async function sample(page, x, y, w, h) {
   await wait(400);
 
   /* ---- T23 角色立绘 base64 能真实解码（不是走兜底图） ---- */
-  const fs = require('fs');
   const htmlSrc = fs.readFileSync(SRC, 'utf8');
   const b64s = (htmlSrc.match(/data:image\/png;base64,([A-Za-z0-9+/=]{1000,})/g) || []).map(s => s.split(',')[1]);
   const decoded = await page.evaluate(list => Promise.all(list.map(b => new Promise(res => {
@@ -317,12 +366,13 @@ async function sample(page, x, y, w, h) {
     decoded.map((d, i) => `#${i}:${d.ok ? d.w + 'x' + d.h : 'DECODE-FAIL'}`).join(' '));
 
   /* ---- T24 难度真的改变数值（不是只改了个标签） ---- */
-  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; });
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
   await wait(200);
+  const acornOpts = await getOpts(page);
   const diffsCmp = {};
   for (let di = 0; di < 3; di++) {
-    await clickAt(page, ...center(diffRects[di])); await wait(200);
-    await clickAt(page, ...center(cardRects[0])); await wait(400);
+    await clickAt(page, ...center(acornOpts[di])); await wait(200);
+    await clickAt(page, ...center(cardRects[IDX_ACORN])); await wait(400);
     diffsCmp[['easy', 'normal', 'hard'][di]] = await page.evaluate(() => ({
       lives: window.__fsm.Acorn.lives,
       maxNuts: window.__fsm.Acorn.nuts.length
@@ -335,8 +385,8 @@ async function sample(page, x, y, w, h) {
     `简单${easyL}命 / 普通${diffsCmp.normal.lives}命 / 困难${hardL}命`);
 
   /* ---- T25 接橡果：指针拖动真实操控 ---- */
-  await clickAt(page, ...center(diffRects[0])); await wait(200);
-  await clickAt(page, ...center(cardRects[0])); await wait(500);
+  await clickAt(page, ...center(acornOpts[0])); await wait(200);
+  await clickAt(page, ...center(cardRects[IDX_ACORN])); await wait(500);
   const x0 = await page.evaluate(() => window.__fsm.Acorn.owlX);
   await page.mouse.move(...(await page.evaluate(() => {
     const r = document.getElementById('game').getBoundingClientRect();
@@ -348,23 +398,39 @@ async function sample(page, x, y, w, h) {
     `owlX ${Math.round(x0)} -> ${Math.round(x1)}（应明显左移）`);
 
   /* ---- T26 竖屏下菜单按钮仍可点（触屏可达性） ---- */
-  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; });
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
   await page.setViewport({ width: 420, height: 860, deviceScaleFactor: 1 });
   await wait(600);
-  await clickAt(page, ...center(diffRects[1])); await wait(300);
+  await clickAt(page, ...center(acornOpts[1])); await wait(300);
   const st26 = await page.evaluate(() => window.__fsm.Game.diff);
   rec('T26', '竖屏下难度按钮仍可点击', st26 === 'normal', `diff=${st26}`);
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await wait(400);
+
+  /* ---- T34 竖屏下翻牌的四个棋盘按钮不重叠、都在画面内 ----
+     四个尺寸按钮比三档难度宽，窄屏最容易挤出边界或互相压住。 */
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('memory'); });
+  await page.setViewport({ width: 420, height: 860, deviceScaleFactor: 1 });
+  await wait(600);
+  const gRect = await getOpts(page);
+  let layoutOk = gRect.length === 4;
+  for (let i = 0; i < gRect.length; i++) {
+    if (gRect[i].x < 0 || gRect[i].x + gRect[i].w > 960) layoutOk = false;
+    if (i > 0 && gRect[i].x < gRect[i - 1].x + gRect[i - 1].w) layoutOk = false;
+  }
+  await clickAt(page, ...center(gRect[3])); await wait(300);
+  const st34 = await page.evaluate(() => window.__fsm.Game.diff);
+  rec('T34', '竖屏下四个棋盘按钮不越界不重叠且可点', layoutOk && st34 === 'g64',
+    gRect.map(r => `[${Math.round(r.x)}~${Math.round(r.x + r.w)}]`).join(' ') + `  点第4个 -> ${st34}`);
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
   await wait(400);
 
   /* ---- T28 记忆翻牌：单张翻开后动画完成仍可见，不被压成细线 ----
      修复前 bug：ctx.scale 用了 cos(flip*π/2)，flip=1 时 sq=0，
      翻开后的卡片宽度只剩 6%，看起来像一条线或"看不到"。 */
-  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
-  await page.evaluate(() => { window.dispatchEvent(new Event('resize')); window.__fsm.Game.state = 'menu'; });
+  await page.evaluate(() => { window.dispatchEvent(new Event('resize')); window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
   await wait(600);
-  await clickAt(page, ...center(diffRects[0])); await wait(200);
-  await clickAt(page, ...center(cardRects[2])); await wait(500);
+  await clickAt(page, ...center(cardRects[IDX_MEM])); await wait(500);
   await page.evaluate(() => {
     const M = window.__fsm.Mem;
     /* 与 test-anim.js A1 同样的处理：牌堆随机，抽到深色动物时正面亮度只有 ~118，
@@ -380,38 +446,8 @@ async function sample(page, x, y, w, h) {
   rec('T28', '翻开的卡片动画完成后可见（非细线）', s28.colors > 8 && s28.lum > 130,
     `colors=${s28.colors} lum=${s28.lum}`);
 
-  /* ---- T29 松鼠冲刺：触屏「跳」「冲」按钮真的画出来了 ----
-     只改 pointerdown 的映射而不画按钮，孩子仍然不知道该点哪。
-     按钮只在 dash + 触屏时出现，这里手动把 Input.touch 置真来触发渲染。 */
-  await page.evaluate(() => {
-    window.__fsm.Game.state = 'menu';
-    window.__fsm.Game.gameId = 'dash';
-    window.__fsm.Game.diff = 'easy';
-    window.__fsm.Input.touch = true;
-    window.__fsm.startCurrent();
-  });
-  await wait(500);
-  const tb29 = await page.evaluate(() => window.__fsm.TouchBtn);
-  const jr = [tb29.jump.x - tb29.jump.r, tb29.jump.y - tb29.jump.r, tb29.jump.r * 2, tb29.jump.r * 2];
-  const br = [tb29.burst.x - tb29.burst.r, tb29.burst.y - tb29.burst.r, tb29.burst.r * 2, tb29.burst.r * 2];
-  const sJump = await sample(page, ...jr);
-  const sBurst = await sample(page, ...br);
-  /* A/B：把触屏标志关掉重采同一块区域，按钮应该消失。
-     直接拿绝对亮度当阈值不可靠 —— 底下是草地，本来就有很多颜色。 */
-  await page.evaluate(() => { window.__fsm.Input.touch = false; });
-  await wait(300);
-  const sJumpOff = await sample(page, ...jr);
-  const sBurstOff = await sample(page, ...br);
-  const dJump = +(sJump.lum - sJumpOff.lum).toFixed(1);
-  const dBurst = +(sBurst.lum - sBurstOff.lum).toFixed(1);
-  /* 取绝对值：按钮是深色调，叠在亮草地上是变暗不是变亮。
-     关键是「有按钮/没按钮」必须差出一大截 —— 冻结画面会得到精确的 0。 */
-  rec('T29', '松鼠冲刺触屏按钮「跳」「冲」渲染且随触屏标志出现/消失',
-    Math.abs(dJump) > 10 && Math.abs(dBurst) > 10,
-    `跳按钮 亮度 ${sJumpOff.lum}->${sJump.lum} (Δ${dJump})  冲按钮 亮度 ${sBurstOff.lum}->${sBurst.lum} (Δ${dBurst})`);
-
   /* ---- T27 菜单页"放学跑酷"跳转按钮存在且可点 ----
-     放在 T29 之后：这个用例会 window.open 打开新标签页，
+     放在最后：这个用例会 window.open 打开新标签页，
      原页面被切到后台后 rAF 停摆、canvas 冻结，排在它后面的采样类用例会读到同一帧而假通过。 */
   await page.evaluate(() => { window.__fsm.Game.state = 'menu'; });
   await wait(300);
