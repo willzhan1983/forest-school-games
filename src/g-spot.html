@@ -23,6 +23,38 @@
 var SPOT_BG_IMG = new Image();
 SPOT_BG_IMG.src = 'data:image/jpeg;base64,__SPOTBG_B64__';
 
+/* ---------- 8 类景物的位图（AI 出图，见 tools/mkitem.js）----------
+   drawH —— 绘制高度，按矢量版的包围盒高度定，保证换图后视觉大小不变
+   ay    —— 锚点在图中的相对位置：0=顶 1=底。地面元素贴地长，锚点取底；
+            天空元素（云/鸟/蝴蝶）悬空，取中心
+   hue   —— 主体基准色相（脚本从图里统计出来的）。改色时只替换色相接近它的
+            像素，所以树干、花蕊、鸟喙这些非主体色不会被一起染掉。
+            -1 = 整张没有够鲜艳的颜色（云、石头），这两类本来就不做 color 差异
+   bs/bl —— 基准色的饱和度/明度。染色时按 目标S/bs、目标L/bl 的比例一起平移，
+            不能只换色相 —— tree 的 #3f8f4f（亮绿）和 #2f7a46（深绿）色相只差
+            6°，全靠明度区分，只换色相的话这两档染完一模一样，根本找不出来
+   pxW/pxH — 位图实际像素，用来算绘制宽度（drawH * pxW/pxH），不用等图解码完 */
+var SPOT_ART = {
+  tree:      { drawH:94, ay:1,   hue:105, bs:0.84, bl:0.44, pxW:104, pxH:128, src:'__SP_TREE_B64__' },
+  bush:      { drawH:49, ay:1,   hue:125, bs:1.00, bl:0.48, pxW:128, pxH:79,  src:'__SP_BUSH_B64__' },
+  mushroom:  { drawH:36, ay:1,   hue:355, bs:0.75, bl:0.61, pxW:122, pxH:128, src:'__SP_MUSHROOM_B64__' },
+  flower:    { drawH:41, ay:1,   hue:55,  bs:0.98, bl:0.51, pxW:98,  pxH:128, src:'__SP_FLOWER_B64__' },
+  rock:      { drawH:28, ay:1,   hue:-1,  bs:1,    bl:1,    pxW:128, pxH:119, src:'__SP_ROCK_B64__' },
+  cloud:     { drawH:47, ay:0.5, hue:-1,  bs:1,    bl:1,    pxW:128, pxH:83,  src:'__SP_CLOUD_B64__' },
+  bird:      { drawH:27, ay:0.5, hue:205, bs:1.00, bl:0.50, pxW:121, pxH:128, src:'__SP_BIRD_B64__' },
+  butterfly: { drawH:26, ay:0.5, hue:275, bs:0.70, bl:0.63, pxW:128, pxH:105, src:'__SP_BUTTERFLY_B64__' }
+};
+(function(){
+  for(var k in SPOT_ART){
+    (function(a){
+      a.img = new Image();
+      a.img.onload = function(){ a.ready = true; };
+      a.img.onerror = function(){ a.ready = false; a.img = null; };
+      a.img.src = 'data:image/png;base64,' + a.src;
+    })(SPOT_ART[k]);
+  }
+})();
+
 var SPOT_W = 444, SPOT_H = 396, SPOT_TOP = 92;
 function spotGeom(){
   if(VIEW.portrait){
@@ -64,8 +96,12 @@ var Spot = {
    同一类里的颜色必须肉眼能分辨，否则「换个颜色」这种差异等于没做。
    树的配色走「春夏 → 秋」：绿 / 深绿 / 黄绿 / 橙 / 赭，都是合理的树的颜色。 */
 var SPOT_PAL = {
-  tree:      ['#3f8f4f','#2f7a46','#7cc356','#e0a03c','#c96a3a'],
-  bush:      ['#4c9c58','#357a45','#8ec96a','#d9a83c'],
+  /* 绿的两档原来写 #3f8f4f / #2f7a46：色相只差 6°，全靠明度区分（0.40 vs 0.33）。
+     矢量版勉强能看出来，换成位图染色后明度是按比例平移的，差距被稀释到
+     色差 19.9 —— 肉眼基本零差别，这处差异等于白出。所以把深的那档压到墨绿
+     （明度 0.40 → 0.25），亮的那档提一点（0.47），两档拉开到一眼能分。 */
+  tree:      ['#4fa05c','#215c33','#7cc356','#e0a03c','#c96a3a'],
+  bush:      ['#4c9c58','#1f5e30','#8ec96a','#d9a83c'],
   mushroom:  ['#e05a4a','#f0a03c','#d94f8c','#8e6bd0','#5ac0c9'],
   flower:    ['#f2b93c','#e8524f','#c86fd9','#4a90d9','#fbf7f2'],
   rock:      ['#8d9aa3','#6f7d87','#b0bac0'],
@@ -174,12 +210,110 @@ var SPOT_DRAW = {
   }
 };
 
+/* ---------- 位图改色 ----------
+   景物换成位图后，「换个颜色」这个差异得自己实现。
+   做法：只替换色相、饱和度和明度按比例平移，不动像素结构 ——
+   高光、暗部、纹理全都留着，不会像整块涂色那样把图糊成一片纯色剪影。
+   只染色相接近主体基准色的像素：树干（棕）、花蕊（橙）、鸟喙（橙）
+   色相差得远，不会被染成和花瓣/羽毛一个色。
+   染色结果按 类型:颜色序号 缓存，一局里最多 8×5=40 张 128px 小图。 */
+var SPOT_TINT = {};
+
+/* 色相环最短角距（0-180） */
+function hueGap(a, b){
+  var d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+/* 逐像素版本，入参直接是 0-255 的 RGB。
+   染色要跑 128×128 个像素，这里如果走「拼 #rrggbb 字符串再 parseInt」，
+   一局下来是几十万次字符串操作，会明显卡顿，所以两条路径分开写。 */
+function rgbToHsl(r8, g8, b8){
+  var r = r8 / 255, g = g8 / 255, b = b8 / 255;
+  var mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, d = mx - mn;
+  var h = 0, s = 0;
+  if(d > 0){
+    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    if(mx === r) h = ((g - b) / d) % 6;
+    else if(mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if(h < 0) h += 360;
+  }
+  return [h, s, l];
+}
+function hexToHsl(hex){
+  return rgbToHsl(parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16));
+}
+function hue2ch(p, q, t){
+  if(t < 0) t += 1;
+  if(t > 1) t -= 1;
+  if(t < 1 / 6) return p + (q - p) * 6 * t;
+  if(t < 1 / 2) return q;
+  if(t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+  return p;
+}
+function hslToRgb(h, s, l){
+  h = (h % 360) / 360;
+  if(s <= 0){ var v = Math.max(0, Math.min(255, Math.round(l * 255))); return [v, v, v]; }
+  var q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  return [
+    Math.max(0, Math.min(255, Math.round(hue2ch(p, q, h + 1 / 3) * 255))),
+    Math.max(0, Math.min(255, Math.round(hue2ch(p, q, h) * 255))),
+    Math.max(0, Math.min(255, Math.round(hue2ch(p, q, h - 1 / 3) * 255)))
+  ];
+}
+
+function spotTinted(type, ci){
+  var a = SPOT_ART[type];
+  var key = type + ':' + ci;
+  if(SPOT_TINT[key]) return SPOT_TINT[key];
+
+  var dst = hexToHsl(SPOT_PAL[type][ci]);
+  /* 没有基准色（云/石头），或目标是灰色（染不出色相）→ 直接用原图。
+     这两类本来就不做 color 差异，不会因此看不出变化。 */
+  if(a.hue < 0 || dst[1] === 0) return (SPOT_TINT[key] = a.img);
+
+  var cv = document.createElement('canvas');
+  cv.width = a.pxW; cv.height = a.pxH;
+  var c2 = cv.getContext('2d');
+  c2.drawImage(a.img, 0, 0);
+  var imd, px;
+  try {
+    imd = c2.getImageData(0, 0, cv.width, cv.height);
+  } catch(e){
+    /* 极端情况（画布被污染）拿不到像素：宁可用原色，也不能让差异消失 */
+    return (SPOT_TINT[key] = a.img);
+  }
+  px = imd.data;
+  /* 饱和度/明度按目标色与基准色的比例平移，保证亮绿/深绿这类
+     只靠明度区分的档位染完仍然分得开 */
+  var kS = dst[1] / (a.bs || 1), kL = dst[2] / (a.bl || 1);
+  for(var i = 0; i < px.length; i += 4){
+    if(px[i + 3] < 8) continue;
+    var c = rgbToHsl(px[i], px[i + 1], px[i + 2]);
+    if(c[1] < 0.25) continue;              /* 灰白/深色描边：原样留着 */
+    if(hueGap(c[0], a.hue) > 40) continue;  /* 非主体色（树干、花蕊）：不动 */
+    var rgb = hslToRgb(dst[0], Math.min(1, c[1] * kS), Math.min(1, Math.max(0, c[2] * kL)));
+    px[i] = rgb[0]; px[i + 1] = rgb[1]; px[i + 2] = rgb[2];
+  }
+  c2.putImageData(imd, 0, 0);
+  return (SPOT_TINT[key] = cv);
+}
+
 function drawSpotProp(p, ox, oy){
   if(p.gone) return;
   ctx.save();
   ctx.translate(ox + p.x, oy + p.y);
   ctx.scale(p.s * p.f, p.s);
-  SPOT_DRAW[p.t](p.c);
+  var a = SPOT_ART[p.t];
+  if(a && a.ready && a.img){
+    /* 位图优先。翻转（p.f=-1）由上面的 scale 统一处理，位图一样生效 */
+    var img = spotTinted(p.t, p.c);
+    var w = a.drawH * a.pxW / a.pxH;
+    ctx.drawImage(img, -w / 2, -a.drawH * a.ay, w, a.drawH);
+  } else {
+    SPOT_DRAW[p.t](p.c);   /* 图还没解码完或加载失败：退回矢量，不会开天窗 */
+  }
   ctx.restore();
 }
 
@@ -467,5 +601,6 @@ function drawSpot(){
    直接整个赋值会把前面挂的东西冲掉。 */
 window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
   Spot:Spot, spotPanel:spotPanel, spotCfg:spotCfg, spotScore:spotScore,
-  SPOT_BG_IMG:SPOT_BG_IMG
+  SPOT_BG_IMG:SPOT_BG_IMG, SPOT_ART:SPOT_ART, SPOT_PAL:SPOT_PAL,
+  SPOT_KINDS:SPOT_KINDS, spotTinted:spotTinted
 });

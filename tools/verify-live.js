@@ -71,13 +71,19 @@ function rec(id, name, pass, detail) {
     }
     return list;
   });
+  /* 第三个坑：分档口径要能兜住所有素材，不然新加的图线上坏了也统计不到。
+     之前按 h 在 110~130 才算小素材，找不同的 bush(128×79)、cloud(128×83)、
+     butterfly(128×105) 三张整张漏验。改成按「比立绘小、比 50px 大」划档，
+     并加一条 unclassified 兜底：有任何一张没被归类就直接判失败。 */
   const bigOnes = imgs.filter(d => d.w > 300);                      /* 场景背景 640×560 */
-  const chars = imgs.filter(d => d.w >= 150 && d.w <= 300 && d.h >= 150);
-  const items = imgs.filter(d => d.h >= 110 && d.h <= 130 && d.w > 50 && d.w < 150);
+  const chars = imgs.filter(d => d.w >= 150 && d.w <= 300 && d.h >= 150);   /* 猫头鹰立绘 */
+  const items = imgs.filter(d => d.w > 50 && d.w < 150 && d.h < 150);       /* 道具/动物/景物 */
+  const unclassified = imgs.length - bigOnes.length - chars.length - items.length;
   const imgsOk = imgs.every(d => d.w > 0 && d.h > 0) &&
-    chars.length >= 2 && items.length >= 15 && bigOnes.length >= 1;
-  rec('V2', '全部素材（2 立绘 + 15 道具/动物 + 1 背景）线上完整可解码', imgsOk,
-    `共 ${imgs.length} 张（立绘 ${chars.length} / 道具动物 ${items.length} / 背景 ${bigOnes.length}）：` +
+    chars.length >= 2 && items.length >= 23 && bigOnes.length >= 1 && unclassified === 0;
+  rec('V2', '全部素材（2 立绘 + 23 小图 + 1 背景）线上完整可解码', imgsOk,
+    `共 ${imgs.length} 张（立绘 ${chars.length} / 小图 ${items.length} / 背景 ${bigOnes.length}` +
+    `${unclassified ? ' / 未归类 ' + unclassified : ''}）：` +
     imgs.map(d => d.w > 0 ? `${d.w}×${d.h}` : 'DECODE-FAIL').join(' '));
 
   /* V3 掉落物尺寸。写死过 34，后来按画布短边改成 48。 */
@@ -259,6 +265,78 @@ function rec(id, name, pass, detail) {
   rec('V12', '找不同面板背景线上生效（上蓝天下草地）',
     spotArt.bgW > 0 && spotArt.up[2] > spotArt.up[0] + 4 && spotArt.dn[1] > spotArt.dn[0] + 4,
     `背景图宽 ${spotArt.bgW}px 上部 rgb(${spotArt.up.join(',')}) 下部 rgb(${spotArt.dn.join(',')})`);
+
+  /* V13 找不同的 8 类景物位图线上真的画出来了。
+     判据同样不能用整幅面板的变化率 —— 面板 444×396，9 个景物才占一成多面积，
+     背景一摊薄只剩 5%，画没画上去都测不出来。逐个景物在自己的包围盒中心取样。 */
+  const propArt = await page.evaluate(async () => {
+    const f = window.__fsm;
+    const cv = document.getElementById('game');
+    const sx = cv.width / 960, sy = cv.height / 540;
+    const c = cv.getContext('2d');
+    const p0 = f.spotPanel(0);
+    const props = f.Spot.L.filter(p => !p.gone).map(p => ({ t: p.t, x: p.x, y: p.y, s: p.s }));
+    const grab = () => props.map(p => {
+      const a = f.SPOT_ART[p.t];
+      const h = a.drawH * p.s, w = h * a.pxW / a.pxH;
+      const bw = Math.max(2, Math.round(w * sx)), bh = Math.max(2, Math.round(h * sy * 0.5));
+      const cx = (p0.x + p.x) * sx, cy = (p0.y + p.y - h * a.ay + h / 2) * sy;
+      return Array.from(c.getImageData(Math.round(cx - bw / 2), Math.round(cy - bh / 2), bw, bh).data);
+    });
+    const A = grab();
+    for (const k of Object.keys(f.SPOT_ART)) f.SPOT_ART[k].ready = false;
+    await new Promise(r => setTimeout(r, 500));
+    const B = grab();
+    for (const k of Object.keys(f.SPOT_ART)) f.SPOT_ART[k].ready = true;
+    const pct = A.map((a, i) => {
+      const b = B[i];
+      let diff = 0, n = 0;
+      for (let k = 0; k < Math.min(a.length, b.length); k += 4) {
+        n++;
+        if (Math.abs(a[k] - b[k]) + Math.abs(a[k + 1] - b[k + 1]) + Math.abs(a[k + 2] - b[k + 2]) > 24) diff++;
+      }
+      return n ? Math.round(diff / n * 100) : 0;
+    });
+    const decoded = Object.keys(f.SPOT_ART)
+      .filter(k => f.SPOT_ART[k].img && f.SPOT_ART[k].img.naturalWidth > 0);
+    return { pct: pct, n: props.length, decoded: decoded.length };
+  });
+  const avgPct = propArt.pct.reduce((a, b) => a + b, 0) / (propArt.pct.length || 1);
+  rec('V13', '找不同 8 类景物位图线上解码且真画在场景里',
+    propArt.decoded === 8 && propArt.n > 0 && propArt.pct.every(p => p > 20) && avgPct > 40,
+    `解码 ${propArt.decoded}/8 类，${propArt.n} 个景物差异率 ${propArt.pct.join('%,')}%，` +
+    `平均 ${avgPct.toFixed(0)}%（阈值 每个 >20%、平均 >40%）`);
+
+  /* V14 景物染色后各档颜色线上仍然分得开。
+     这是位图方案最脆的一环：调色板或染色算法一动，两档染完可能几乎一样，
+     那处差异就永远找不到了，而「图有没有解码」这类检查全都是绿的。 */
+  const tintLive = await page.evaluate(() => {
+    const f = window.__fsm;
+    const d3 = (a, b) => Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+    const out = [];
+    for (const type of Object.keys(f.SPOT_ART)) {
+      const a = f.SPOT_ART[type];
+      if (a.hue < 0) continue;          /* 云/石头不做 color 差异 */
+      const pal = f.SPOT_PAL[type], avg = [];
+      for (let i = 0; i < pal.length; i++) {
+        const cv = f.spotTinted(type, i);
+        const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let p = 0; p < d.length; p += 4) if (d[p + 3] >= 128) { r += d[p]; g += d[p + 1]; b += d[p + 2]; n++; }
+        avg.push([Math.round(r / n), Math.round(g / n), Math.round(b / n)]);
+      }
+      let minD = 1e9;
+      for (let i = 0; i < avg.length; i++) for (let j = i + 1; j < avg.length; j++) {
+        minD = Math.min(minD, d3(avg[i], avg[j]));
+      }
+      out.push({ type: type, minD: +minD.toFixed(1) });
+    }
+    return out;
+  });
+  const worstLive = tintLive.reduce((a, b) => (b.minD < a.minD ? b : a), { minD: 1e9, type: '-' });
+  rec('V14', '景物染色后各档颜色线上仍肉眼可分（最差 ≥ 35）',
+    tintLive.length === 6 && tintLive.every(t => t.minD >= 35),
+    tintLive.map(t => `${t.type} ${t.minD}`).join(' ') + ` ← 最差 ${worstLive.type} ${worstLive.minD}`);
 
   /* V10 全程结束仍零错误（跑完上面这些操作后复检） */
   rec('V10', '复验全程零运行时错误', errs.length === 0 && warns.length === 0,

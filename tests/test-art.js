@@ -175,7 +175,193 @@ async function sample(page, x, y, w, h) {
   await page.evaluate(() => { window.__fsm.SPOT_BG_IMG.src = window.__bgSrc; });
   await wait(500);
 
-  rec('ART8', '配图流程零运行时错误', errs.length === 0, errs.slice(0, 3).join(' | ') || '0 error');
+  /* ================= 找不同：8 类景物位图 ================= */
+
+  /* ---- ART8 8 类景物位图全部解码 ---- */
+  const artImgs = await page.evaluate(() => {
+    const out = {};
+    for (const k of Object.keys(window.__fsm.SPOT_ART)) {
+      const a = window.__fsm.SPOT_ART[k];
+      out[k] = { ok: !!(a.ready && a.img && a.img.naturalWidth > 0), w: a.img ? a.img.naturalWidth : 0, h: a.img ? a.img.naturalHeight : 0 };
+    }
+    return out;
+  });
+  const artKeys = Object.keys(artImgs);
+  rec('ART8', '找不同 8 类景物位图全部解码成功',
+    artKeys.length === 8 && artKeys.every(k => artImgs[k].ok),
+    artKeys.map(k => k + ':' + artImgs[k].w + 'x' + artImgs[k].h).join(' '));
+
+  /* ---- ART9 每个景物画的都是 AI 位图，不是悄悄走了矢量 ----
+     判据不能拿整个面板的像素变化率：面板 444×396，9 个景物加起来才占一成多
+     面积，背景一摊薄，位图换矢量只有 5% 的像素在变 —— 信号被稀释没了，
+     位图画没画上去都测不出来。所以逐个景物在自己的包围盒中心取样。
+     只置 ready=false（不动 src）：drawSpotProp 就走矢量分支，图对象还活着，
+     还原时置回 true 即可，不用重建 Image。 */
+  const propList = await page.evaluate(() => window.__fsm.Spot.L
+    .filter(p => !p.gone)
+    .map(p => ({ t: p.t, x: p.x, y: p.y, s: p.s })));
+  const grabProps = (props) => page.evaluate((props) => {
+    const f = window.__fsm;
+    const cv = document.getElementById('game');
+    const sx = cv.width / 960, sy = cv.height / 540;
+    const c = cv.getContext('2d');
+    const p0 = f.spotPanel(0);
+    return props.map(p => {
+      const a = f.SPOT_ART[p.t];
+      const h = a.drawH * p.s, w = h * a.pxW / a.pxH;   /* 与 drawSpotProp 同一套换算 */
+      const bw = Math.max(2, Math.round(w * sx));
+      const bh = Math.max(2, Math.round(h * sy * 0.5));  /* 取中间一半高，避开边缘背景 */
+      const cx = (p0.x + p.x) * sx, cy = (p0.y + p.y - h * a.ay + h / 2) * sy;
+      return Array.from(c.getImageData(Math.round(cx - bw / 2), Math.round(cy - bh / 2), bw, bh).data);
+    });
+  }, props);
+
+  const propBmp = await grabProps(propList);
+  await page.evaluate(() => {
+    for (const k of Object.keys(window.__fsm.SPOT_ART)) window.__fsm.SPOT_ART[k].ready = false;
+  });
+  await wait(500);
+  const propVec = await grabProps(propList);
+  const perProp = propBmp.map((A, i) => {
+    const B = propVec[i];
+    let diff = 0, n = 0;
+    for (let k = 0; k < Math.min(A.length, B.length); k += 4) {
+      n++;
+      if (Math.abs(A[k] - B[k]) + Math.abs(A[k + 1] - B[k + 1]) + Math.abs(A[k + 2] - B[k + 2]) > 24) diff++;
+    }
+    return { t: propList[i].t, pct: n ? Math.round(diff / n * 100) : 0 };
+  });
+  const avgProp = perProp.reduce((s, p) => s + p.pct, 0) / (perProp.length || 1);
+  rec('ART9', '每个景物画的都是 AI 位图（逐个比对位图 vs 矢量）',
+    perProp.length > 0 && perProp.every(p => p.pct > 20) && avgProp > 40,
+    perProp.map(p => `${p.t} ${p.pct}%`).join(' ') +
+    ` ← 平均 ${avgProp.toFixed(0)}%（阈值 每个 >20%、平均 >40%）`);
+
+  const vecAll = await sample(page, p0.x + 8, p0.y + 8, p0.w - 16, p0.h - 16);
+
+  /* ---- ART10 位图失效时矢量兜底仍能画满场景 ---- */
+  rec('ART10', '位图失效时矢量兜底仍能画出完整场景',
+    vecAll.colors > 10 && vecAll.lum > 120,
+    `colors=${vecAll.colors} lum=${vecAll.lum}（阈值 colors>10 lum>120）`);
+  await page.evaluate(() => {
+    for (const k of Object.keys(window.__fsm.SPOT_ART)) window.__fsm.SPOT_ART[k].ready = true;
+  });
+  await wait(400);
+
+  /* ---- ART11 染色后每档颜色仍然分得开（核心回归）----
+     景物换成位图后，「换个颜色」这个差异全靠染色实现。
+     调色板或染色算法一旦改动，很容易出现两档染完几乎一样 ——
+     那样这处差异就是白出的，孩子永远找不到。所以这里逐对量色差，
+     取每类最差的一对，要求 ≥ 35（两个色在这个距离上肉眼可分）。 */
+  const tintStat = await page.evaluate(() => {
+    const f = window.__fsm;
+    const d3 = (a, b) => Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+    const hueOf = (r, g, b) => {
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+      if (d === 0) return -1;
+      let h = mx === r ? ((g - b) / d) % 6 : (mx === g ? (b - r) / d + 2 : (r - g) / d + 4);
+      h *= 60;
+      return h < 0 ? h + 360 : h;
+    };
+    const hexHue = (h) => hueOf(parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16));
+    const out = [];
+    for (const type of Object.keys(f.SPOT_ART)) {
+      const a = f.SPOT_ART[type];
+      if (a.hue < 0) continue;              /* 云/石头不做 color 差异 */
+      const pal = f.SPOT_PAL[type];
+      const avg = [], cols = [], brown = [], dstHue = [];
+      for (let i = 0; i < pal.length; i++) {
+        const cv = f.spotTinted(type, i);
+        const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+        let r = 0, g = 0, b = 0, n = 0, br = 0;
+        const uniq = new Set();
+        for (let p = 0; p < d.length; p += 4) {
+          if (d[p + 3] < 128) continue;
+          r += d[p]; g += d[p + 1]; b += d[p + 2]; n++;
+          uniq.add((d[p] >> 4) + ',' + (d[p + 1] >> 4) + ',' + (d[p + 2] >> 4));
+          const mx = Math.max(d[p], d[p + 1], d[p + 2]), mn = Math.min(d[p], d[p + 1], d[p + 2]);
+          if (mx > 0 && (mx - mn) / mx > 0.3) {
+            const h = hueOf(d[p], d[p + 1], d[p + 2]);
+            if (h >= 20 && h <= 45) br++;   /* 棕色系：树干/花蕊/鸟喙，不该被染成主体色 */
+          }
+        }
+        avg.push([Math.round(r / n), Math.round(g / n), Math.round(b / n)]);
+        cols.push(uniq.size);
+        brown.push(+(br / n * 100).toFixed(1));
+        dstHue.push(Math.round(hexHue(pal[i])));
+      }
+      let minD = 1e9, worst = '';
+      for (let i = 0; i < avg.length; i++) for (let j = i + 1; j < avg.length; j++) {
+        const dd = d3(avg[i], avg[j]);
+        if (dd < minD) { minD = dd; worst = '#' + i + '/#' + j; }
+      }
+      out.push({ type: type, minD: +minD.toFixed(1), worst: worst, cols: cols, brown: brown, dstHue: dstHue });
+    }
+    return out;
+  });
+  const TINT_MIN = 35;
+  const worstTint = tintStat.reduce((a, b) => (b.minD < a.minD ? b : a));
+  rec('ART11', '染色后每档颜色仍肉眼可分（最差一对 ≥ ' + TINT_MIN + '）',
+    tintStat.every(t => t.minD >= TINT_MIN),
+    tintStat.map(t => `${t.type} 最差${t.minD}(${t.worst})`).join(' ') +
+    ` ← 全场最差 ${worstTint.type} ${worstTint.minD}`);
+
+  /* ---- ART12 染色保留明暗层次（不是糊成一块纯色剪影）----
+     只换色相的话高光和暗部全没了，图会变得很平。
+     色彩数就是这个的探针：纯色剪影只有个位数，有明暗过渡的有几十上百。 */
+  const minCols = tintStat.map(t => Math.min.apply(null, t.cols));
+  rec('ART12', '染色保留明暗层次（各档色彩数 > 8）',
+    minCols.every(c => c > 8),
+    tintStat.map(t => t.type + ':[' + t.cols.join(',') + ']').join(' '));
+
+  /* ---- ART13 非主体色没被一起染掉 ----
+     树的基准色是绿（hue 105），树干是棕（hue 20-45），色相差得远，
+     染成红/紫/蓝之后树干必须还是棕的 —— 否则整棵树一个色，既假又难看。
+
+     判据要看「染成非棕色时」的棕色占比：tree 的橙/赭两档目标色本身就是棕色，
+     整棵树染完都是棕的，占比自然接近 100%，不能拿来判。真正要证明的是
+     染成绿/墨绿/黄绿时树干的棕色像素一动不动 —— 这几档之间占比极差必须很小。 */
+  const treeStat = tintStat.find(t => t.type === 'tree');
+  const nb = treeStat ? treeStat.brown.filter((v, i) => treeStat.dstHue[i] < 20 || treeStat.dstHue[i] > 45) : [];
+  const nbSpread = nb.length ? +(Math.max.apply(null, nb) - Math.min.apply(null, nb)).toFixed(1) : 99;
+  rec('ART13', '树干等次要色没被一起染掉（染成非棕色时棕色占比稳定）',
+    nb.length >= 2 && Math.min.apply(null, nb) > 0.5 && nbSpread < 5,
+    treeStat ? `tree 棕色占比 ${treeStat.brown.join('%, ')}%（目标色相 ${treeStat.dstHue.join(',')}）；` +
+      `非棕色目标档 [${nb.join('%, ')}%] 极差 ${nbSpread}%（阈值 >0.5% 且极差 <5%）` : '没找到 tree');
+
+  /* ---- ART14 位图的 flip 差异生效 ----
+     hard 难度才有 flip。位图靠 ctx.scale(-1,1) 翻转，
+     验证方式：同一只鸟，f=1 和 f=-1 画出来的像素必须明显不同（不是镜像就全等）。 */
+  const flipStat = await page.evaluate(() => {
+    const f = window.__fsm;
+    const a = f.SPOT_ART.bird;
+    const cv = f.spotTinted('bird', 0);
+    const draw = (fl) => {
+      const c = document.createElement('canvas');
+      c.width = 80; c.height = 80;
+      const g = c.getContext('2d');
+      g.save();
+      g.translate(40, 40);
+      g.scale(a.drawH / a.pxH * fl, a.drawH / a.pxH);   /* 与 drawSpotProp 同样的变换 */
+      g.drawImage(cv, -a.pxW / 2, -a.pxH * a.ay, a.pxW, a.pxH);
+      g.restore();
+      return g.getImageData(0, 0, 80, 80).data;
+    };
+    const A = draw(1), B = draw(-1);
+    let diff = 0, n = 0, opaque = 0;
+    for (let i = 0; i < A.length; i += 4) {
+      if (A[i + 3] > 40) opaque++;
+      n++;
+      if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) > 40) diff++;
+    }
+    return { diff: diff, opaque: opaque, total: n };
+  });
+  rec('ART14', '位图的水平翻转差异生效',
+    flipStat.opaque > 100 && flipStat.diff > flipStat.opaque * 0.3,
+    `不透明像素=${flipStat.opaque} 翻转后差异像素=${flipStat.diff}` +
+    `（阈值 差异 > 不透明的 30%）`);
+
+  rec('ART15', '配图流程零运行时错误', errs.length === 0, errs.slice(0, 3).join(' | ') || '0 error');
 
   await browser.close();
   const pass = results.filter(r => r.pass).length;

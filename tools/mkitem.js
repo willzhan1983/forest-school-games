@@ -77,6 +77,51 @@ function sat(r, g, b) {
   return mx === 0 ? 0 : (mx - mn) / mx;
 }
 
+/* RGB → 色相（0-360）。改色要靠它：只替换色相、保留饱和度与明度，
+   明暗层次和高光才不会被抹平成一块纯色剪影。 */
+function hueOf(r, g, b) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  if (d === 0) return -1;                 /* 灰/黑/白没有色相 */
+  let h;
+  if (mx === r) h = ((g - b) / d) % 6;
+  else if (mx === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h *= 60;
+  return h < 0 ? h + 360 : h;
+}
+
+/* 主体基准色：只统计"够鲜艳、非极暗极亮"的像素，按色相分 36 桶取峰值桶，
+   桶内的饱和度/明度取均值一起返回。
+   低饱和的白/灰/深色描边会被排除，所以树干、花蕊、鸟喙这类非主体色
+   不会污染基准值，改色时也就不会被一起染掉。
+
+   为什么连 S/L 都要：游戏里 tree 的 #3f8f4f（亮绿）和 #2f7a46（深绿）色相
+   只差 6°，原来靠明度区分。位图染色若只换色相、保留原图明度，这两档
+   染完一模一样，孩子根本找不出来。所以运行时要按 目标S/基准S、目标L/基准L
+   的比例一起平移，明度差异才留得住。 */
+function baseColor(rgba) {
+  const hist = new Array(36).fill(0), sumS = new Array(36).fill(0), sumL = new Array(36).fill(0);
+  for (let p = 0; p < rgba.length / 4; p++) {
+    const o = p * 4;
+    if (rgba[o + 3] < 200) continue;
+    const r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
+    if (sat(r, g, b) < 0.35) continue;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    const L = (mx + mn) / 2 / 255;
+    if (L < 0.15 || L > 0.9) continue;
+    const h = hueOf(r, g, b);
+    if (h < 0) continue;
+    const k = Math.min(35, Math.floor(h / 10));
+    hist[k]++;
+    sumS[k] += (mx - mn) / (mx || 1);
+    sumL[k] += L;
+  }
+  let best = 0, bestN = -1;
+  for (let i = 0; i < 36; i++) if (hist[i] > bestN) { bestN = hist[i]; best = i; }
+  if (bestN <= 0) return { h: -1, s: 0, l: 0 };      /* 整张没有鲜艳色（云、石头） */
+  return { h: best * 10 + 5, s: sumS[best] / bestN, l: sumL[best] / bestN };
+}
+
 async function strip(srcPath, outName) {
   const img = sharp(srcPath);
   const { width: w, height: h } = await img.metadata();
@@ -203,8 +248,11 @@ async function strip(srcPath, outName) {
   fs.writeFileSync(path.join(ROOT, 'src', outName + '.b64.txt'), b64);
   fs.mkdirSync(path.join(ROOT, 'raw-items', 'out'), { recursive: true });
   fs.writeFileSync(path.join(RAW, 'out', outName + '.png'), buf);
-  console.log(`  → ${info.width}x${info.height} png=${(buf.length / 1024).toFixed(1)}KB b64=${(b64.length / 1024).toFixed(1)}KB 水印=${wmCount} 羽化=${feathered} 内容框=${tw}x${th}`);
-  return buf.length;
+
+  /* 主体基准色：找不同要按它做改色，只有位图类的才需要（背景图不去背，跳过） */
+  const bc = baseColor(rgba);
+  console.log(`  → ${info.width}x${info.height} png=${(buf.length / 1024).toFixed(1)}KB b64=${(b64.length / 1024).toFixed(1)}KB 水印=${wmCount} 羽化=${feathered} 内容框=${tw}x${th} 基准色=${bc.h}(S${bc.s.toFixed(2)} L${bc.l.toFixed(2)})`);
+  return { bytes: buf.length, base: bc, w: info.width, h: info.height };
 }
 
 (async () => {
@@ -227,17 +275,40 @@ async function strip(srcPath, outName) {
     ['Front_facing_cute_panda_head_p_2026-09-01T17-17-56.png',    'an9'],
     ['Front_facing_cute_pink_piglet__2026-09-01T17-17-55.png',    'an10'],
     ['Front_facing_cute_brown_otter__2026-09-01T17-17-57.png',    'an11'],
+    /* g-spot 找不同：8 类场景元素（透明 PNG）。
+       顺序无所谓，代码里按 key 取；尺寸和基准色相在下面打印，写进 SPOT_ART。 */
+    ['sp-tree.png',      'sp_tree'],
+    ['sp-bush.png',      'sp_bush'],
+    ['sp-mushroom.png',  'sp_mushroom'],
+    ['sp-flower.png',    'sp_flower'],
+    ['sp-rock.png',      'sp_rock'],
+    ['sp-cloud.png',     'sp_cloud'],
+    ['sp-bird.png',      'sp_bird'],
+    ['sp-butterfly.png', 'sp_butterfly'],
   ];
   let total = 0;
+  const meta = {};
   for (const [file, name] of JOBS) {
     const p = path.join(RAW, file);
     if (!fs.existsSync(p)) throw new Error('缺少源图: ' + p);
-    total += await strip(p, name);
+    const r = await strip(p, name);
+    total += r.bytes;
+    meta[name] = { base: r.base, w: r.w, h: r.h };
   }
   /* g-spot 找不同：面板背景（不透明 JPEG，天空上 55% + 草地下 45%） */
   total += await buildSpotBg(
     path.join(RAW, 'Children_s_picture_book_illust_2026-09-01T17-18-14.png'),  /* 天空 */
     path.join(RAW, 'Children_s_picture_book_illust_2026-09-01T17-18-15.png'),  /* 草地 */
     'spotbg');
+
+  /* 找不同 8 类的尺寸与基准色相 —— 抄进 src/g-spot.html 的 SPOT_ART */
+  const keys = Object.keys(meta).filter(k => k.indexOf('sp_') === 0);
+  if (keys.length) {
+    console.log('\n找不同素材（抄进 SPOT_ART）：');
+    for (const k of keys) {
+      const b = meta[k].base;
+      console.log(`  ${k.replace('sp_', '').padEnd(10)} w=${meta[k].w} h=${meta[k].h} hue=${b.h} bs=${b.s.toFixed(2)} bl=${b.l.toFixed(2)}`);
+    }
+  }
   console.log('素材总计 ' + (total / 1024).toFixed(1) + 'KB');
 })();
