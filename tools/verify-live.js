@@ -413,6 +413,39 @@ function rec(id, name, pass, detail) {
     `素材 ${zEnter.decoded}/3 张（${zEnter.imgW}px）｜ minSwaps=${zSwap.min} moves=${zDone.m} ` +
     `-> state=${zDone.s} score=${zDone.sc}（base=${zSwap.base}）`);
 
+  /* V17 打地鼠线上：洞数随难度递增 + 单洞物理尺寸严格单调递减。
+     PR #21 之前漏了"派生量必须直接断言"，T50 只验 gap 数字递减
+     没验洞尺寸 —— 结果横屏 hard 反而比 normal 还好点（一个变量两用的坑）。
+     线上复测一次，杜绝类似问题再悄悄回来。 */
+  const wh17 = await page.evaluate(async () => {
+    const f = window.__fsm;
+    const cv = document.getElementById('game');
+    const portrait = window.innerHeight > window.innerWidth * 1.15;
+    const s = cv.getBoundingClientRect().width / (portrait ? 540 : 960);
+    const out = {};
+    for (const d of ['easy', 'normal', 'hard']) {
+      f.Game.state = 'menu'; f.selectGame('whack'); f.selectDiff(d); f.startCurrent();
+      await new Promise(r => setTimeout(r, 60));
+      out[d] = {
+        n: f.Whack.holes.length,
+        hole: f.whackBoard().hole,
+        pxHole: +(f.whackBoard().hole * s).toFixed(1),
+        pxTap: +(f.whackBoard().hole * 1.14 * s).toFixed(1)
+      };
+    }
+    return { portrait, s: +s.toFixed(3), ...out };
+  });
+  const w = wh17;
+  /* 字段名对上 evaluate 里返回的 n / pxHole，别写成 nHoles（undefined 比较恒 false） */
+  const mono = w.easy.n < w.normal.n && w.normal.n < w.hard.n &&
+               w.easy.pxHole >= w.normal.pxHole && w.normal.pxHole >= w.hard.pxHole;
+  const allTapOK = w.easy.pxTap >= 60 && w.normal.pxTap >= 60 && w.hard.pxTap >= 60;
+  rec('V17', '打地鼠线上：洞数 6/9/12 递增 + 单洞物理尺寸单调递减 + 热区均 >= 60px',
+    mono && allTapOK,
+    `横屏 1440x900 s=${w.s} ｜ 洞数 ${w.easy.n}/${w.normal.n}/${w.hard.n} ｜ ` +
+    `热区 ${w.easy.pxTap}/${w.normal.pxTap}/${w.hard.pxTap}px ｜ ` +
+    `单洞 ${w.easy.pxHole}->${w.normal.pxHole}->${w.hard.pxHole}px ${mono ? '单调' : '非单调!'}`);
+
   /* V10 全程结束仍零错误（跑完上面这些操作后复检） */
   rec('V10', '复验全程零运行时错误', errs.length === 0 && warns.length === 0,
     `error=${errs.length} warning=${warns.length}${errs[0] ? ' | ' + errs[0].slice(0, 90) : ''}`);
