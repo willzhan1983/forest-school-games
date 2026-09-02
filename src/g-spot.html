@@ -17,6 +17,12 @@
 /* 面板几何。横屏 960 宽里放两幅 444 的图，左右各留 24、中间隔 24；
    竖屏 540 宽纵向放两幅（左 + 12 边距），w=W-24=516，h=(H-184)/2≈388。
    都在 viewport 变更时按新 W/H 重算（不是常量），竖屏 W=540 时变成上下两幅。 */
+/* 面板背景图（AI 出图，天空上 55% + 草地下 45%，见 tools/mkitem.js）。
+   两幅面板共用同一张 —— 背景必须完全一致，否则孩子一眼看出背景不同就白找了。
+   没解码完就退回原来的纯色渐变。 */
+var SPOT_BG_IMG = new Image();
+SPOT_BG_IMG.src = 'data:image/jpeg;base64,__SPOTBG_B64__';
+
 var SPOT_W = 444, SPOT_H = 396, SPOT_TOP = 92;
 function spotGeom(){
   if(VIEW.portrait){
@@ -340,18 +346,32 @@ function drawSpotPanelBg(r){
   ctx.fillRect(r.x, r.y, r.w, r.h);
 
   var i = SPOT_INSET;
-  var g = ctx.createLinearGradient(0, r.y, 0, r.y + r.h);
-  g.addColorStop(0, '#bfe3f5');
-  g.addColorStop(0.55, '#dff0f8');
-  g.addColorStop(0.56, '#a8d98a');
-  g.addColorStop(1, '#7cc46a');
-  ctx.fillStyle = g;
-  roundRect(r.x + i, r.y + i, r.w - i * 2, r.h - i * 2, 12); ctx.fill();
-  /* 太阳画在背景里（两幅图一样），云飘过去也好看 */
-  ctx.fillStyle = 'rgba(255,226,120,.92)';
-  ctx.beginPath(); ctx.arc(r.x + r.w - 58, r.y + 46, 21, 0, 6.2832); ctx.fill();
+  var px = r.x + i, py = r.y + i, pw = r.w - i * 2, ph = r.h - i * 2;
+  ctx.save();
+  ctx.beginPath(); roundRect(px, py, pw, ph, 12); ctx.clip();
+  if (SPOT_BG_IMG && SPOT_BG_IMG.complete && SPOT_BG_IMG.naturalWidth) {
+    /* cover 铺满：先按宽对齐，高度不够再按高对齐，多出来的部分居中裁掉，
+       这样横屏（444×396）和竖屏（516×388）都不会被拉变形。 */
+    var ar = SPOT_BG_IMG.naturalWidth / SPOT_BG_IMG.naturalHeight;
+    var dw = pw, dh = dw / ar;
+    if (dh < ph) { dh = ph; dw = dh * ar; }
+    ctx.drawImage(SPOT_BG_IMG, px + (pw - dw) / 2, py + (ph - dh) / 2, dw, dh);
+  } else {
+    var g = ctx.createLinearGradient(0, r.y, 0, r.y + r.h);
+    g.addColorStop(0, '#bfe3f5');
+    g.addColorStop(0.55, '#dff0f8');
+    g.addColorStop(0.56, '#a8d98a');
+    g.addColorStop(1, '#7cc46a');
+    ctx.fillStyle = g;
+    roundRect(px, py, pw, ph, 12); ctx.fill();
+    /* 兜底用的矢量太阳。背景图里有 AI 画的光感，再叠一个黄圆反而突兀，
+       所以只在渐变兜底时才画。 */
+    ctx.fillStyle = 'rgba(255,226,120,.92)';
+    ctx.beginPath(); ctx.arc(r.x + r.w - 58, r.y + 46, 21, 0, 6.2832); ctx.fill();
+  }
+  ctx.restore();
   ctx.strokeStyle = 'rgba(90,120,100,.40)'; ctx.lineWidth = 2;
-  roundRect(r.x + i, r.y + i, r.w - i * 2, r.h - i * 2, 12); ctx.stroke();
+  roundRect(px, py, pw, ph, 12); ctx.stroke();
 }
 
 function drawSpotScene(list, panel){
@@ -443,6 +463,9 @@ function drawSpot(){
 
 /* 把内部对象暴露给测试脚本。p4 在启动时会把 __fsmExtras 并进 window.__fsm，
    所以加新游戏不用再去改 p4 的 __fsm 字面量。 */
-window.__fsmExtras = {
-  Spot:Spot, spotPanel:spotPanel, spotCfg:spotCfg, spotScore:spotScore
-};
+/* 用 Object.assign 合并而不是直接赋值：p3 已经往这里挂过 ANIMAL_IMG，
+   直接整个赋值会把前面挂的东西冲掉。 */
+window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
+  Spot:Spot, spotPanel:spotPanel, spotCfg:spotCfg, spotScore:spotScore,
+  SPOT_BG_IMG:SPOT_BG_IMG
+});
