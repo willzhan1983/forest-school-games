@@ -17,6 +17,10 @@ const puppeteer = require('puppeteer-core');
 const spotMatch = require('../tests/lib-spot-match.js');
 
 const URL = process.env.TARGET_URL || 'https://willzhan1983.github.io/forest-school-games/';
+/* 导航超时。原来写死 60s，首页涨到 1.36MB 又碰上网络慢（实测单请求 7~13s），
+   networkidle0 等不到就整个脚本挂掉，看着像线上坏了其实是网络抖。
+   默认放宽到 120s，急的时候用 NAV_TIMEOUT=30000 收紧。 */
+const NAV_TIMEOUT = Number(process.env.NAV_TIMEOUT || 120000);
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -41,7 +45,7 @@ function rec(id, name, pass, detail) {
   });
 
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
-  await page.goto(URL, { waitUntil: 'networkidle0', timeout: 60000 });
+  await page.goto(URL, { waitUntil: 'networkidle0', timeout: NAV_TIMEOUT });
   await wait(1500);   /* 等素材解码 + SW 注册 */
 
   /* V1 加载健康度 */
@@ -326,6 +330,88 @@ function rec(id, name, pass, detail) {
   rec('V14', '景物染色后各档颜色线上仍肉眼可分（最差 ≥ 35）',
     tintLive.length === 6 && tintLive.every(t => t.minD >= 35),
     tintLive.map(t => `${t.type} ${t.minD}`).join(' ') + ` ← 最差 ${worstLive.type} ${worstLive.minD}`);
+
+  /* V15 打地鼠线上能玩：命中好物加分、好物漏接只断连击不扣分。
+     这两条是体检后定的规矩（不扣命；惩罚「判断错」不惩罚「来不及」）。
+     本地测过不算数 —— base64 在构建环节被截断、或 SW 把旧版本缓存住，
+     线上跑的就是没有这条规矩的老代码，而状态位照样是绿的。 */
+  const clickAt = async (lx, ly) => {
+    const pt = await page.evaluate(([x, y]) => {
+      const r = document.getElementById('game').getBoundingClientRect();
+      return { x: r.left + x * (r.width / window.__fsm.W),
+               y: r.top + y * (r.height / window.__fsm.H) };
+    }, [lx, ly]);
+    await page.mouse.click(pt.x, pt.y);
+  };
+
+  const wEnter = await page.evaluate(async () => {
+    const f = window.__fsm;
+    f.Game.state = 'menu'; f.selectGame('whack'); f.selectDiff('normal'); f.startCurrent();
+    await new Promise(r => setTimeout(r, 300));
+    return { id: f.curGame().id, nHoles: f.Whack.holes.length };
+  });
+  /* 直接插一个 st=2（完全冒出）、t=12（pop=1，最大可点）的好物，不等随机冒头 */
+  const wHitPt = await page.evaluate(() => {
+    const f = window.__fsm, h = f.Whack.holes[3];
+    h.isBad = false; h.k = 2; h.st = 2; h.t = 12;
+    f.Whack.combo = 0; f.Whack.mult = 1; f.Game.score = 0;
+    const r = f.whackHoleRect(3);
+    return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+  });
+  await clickAt(wHitPt.x, wHitPt.y);
+  await wait(300);
+  const afterHit = await page.evaluate(() => ({
+    s: window.__fsm.Game.score, c: window.__fsm.Whack.combo }));
+  /* 漏接：把好物推到 life 边缘再走一帧 */
+  const afterMiss = await page.evaluate(() => {
+    const f = window.__fsm, c = f.whackCfg(), h = f.Whack.holes[5];
+    h.isBad = false; h.k = 1; h.st = 2; h.t = c.life - 1;
+    f.Whack.combo = 3; f.Whack.mult = 2; f.Game.score = 200;
+    f.curGame().update(1);
+    return { s: f.Game.score, c: f.Whack.combo, miss: f.Whack.miss };
+  });
+  rec('V15', '打地鼠线上：命中好物加分，好物漏接只断连击不扣分',
+    wEnter.id === 'whack' && wEnter.nHoles === 9 &&
+    afterHit.s === 10 && afterHit.c === 1 &&
+    afterMiss.s === 200 && afterMiss.c === 0 && afterMiss.miss >= 1,
+    `开局 ${wEnter.nHoles} 洞 ｜ 命中 0->${afterHit.s} 分 combo=${afterHit.c} ｜ ` +
+    `漏接后 ${afterMiss.s} 分不变 combo=0 漏接=${afterMiss.miss}`);
+
+  /* V16 拼图线上能玩：3 张素材解码 + 交换生效 + 完美玩法拿满分 base。
+     拼图是这次新加的，最怕两件事：线上 base64 被截断（画面全白却不报错）、
+     计分公式跑偏。V2 只验「图能不能解码」，验不到「能不能玩、分对不对」。 */
+  const zEnter = await page.evaluate(async () => {
+    const f = window.__fsm;
+    f.Game.state = 'menu'; f.selectGame('puzzle'); f.selectDiff('p33'); f.startCurrent();
+    await new Promise(r => setTimeout(r, 900));
+    return {
+      id: f.curGame().id, n: f.Puz.n, ready: f.Puz.ready,
+      decoded: f.Puz.imgs.filter(function (im) { return im && im.naturalWidth > 0; }).length,
+      imgW: f.puzImg() ? f.puzImg().naturalWidth : 0
+    };
+  });
+  /* 构造「一次交换就能解」的局面：identity 但 0/1 互换。
+     完美玩法（1 步解）应当恰好拿满分 base —— 计分基线就是这么定的。 */
+  const zSwap = await page.evaluate(() => {
+    const f = window.__fsm, n = f.Puz.n;
+    f.Puz.order = []; for (let k = 0; k < n; k++) f.Puz.order.push(k);
+    const t = f.Puz.order[0]; f.Puz.order[0] = f.Puz.order[1]; f.Puz.order[1] = t;
+    f.Puz.minSwaps = f.minSwapsOf(f.Puz.order);
+    f.Puz.moves = 0; f.Puz.sel = -1; f.Puz.done = false;
+    const c0 = f.puzCell(0), c1 = f.puzCell(1);
+    return { min: f.Puz.minSwaps, base: f.puzCfg().base,
+             x0: c0.x + c0.w / 2, y0: c0.y + c0.h / 2,
+             x1: c1.x + c1.w / 2, y1: c1.y + c1.h / 2 };
+  });
+  await clickAt(zSwap.x0, zSwap.y0); await wait(200);
+  await clickAt(zSwap.x1, zSwap.y1); await wait(1500);   /* solvedT 36 帧 + 余量 */
+  const zDone = await page.evaluate(() => ({
+    s: window.__fsm.Game.state, sc: window.__fsm.Game.score, m: window.__fsm.Puz.moves }));
+  rec('V16', '拼图线上：3 张素材解码 + 交换生效 + 完美玩法拿满分 base',
+    zEnter.id === 'puzzle' && zEnter.n === 9 && zEnter.decoded === 3 && zEnter.imgW === 512 &&
+    zSwap.min === 1 && zDone.s === 'result' && zDone.m === 1 && zDone.sc === zSwap.base,
+    `素材 ${zEnter.decoded}/3 张（${zEnter.imgW}px）｜ minSwaps=${zSwap.min} moves=${zDone.m} ` +
+    `-> state=${zDone.s} score=${zDone.sc}（base=${zSwap.base}）`);
 
   /* V10 全程结束仍零错误（跑完上面这些操作后复检） */
   rec('V10', '复验全程零运行时错误', errs.length === 0 && warns.length === 0,
