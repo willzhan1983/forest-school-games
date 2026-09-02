@@ -459,6 +459,35 @@ function gridCfg(){
   for(var i = 0; i < GRIDS.length; i++) if(GRIDS[i].id === Game.diff) return GRIDS[i];
   return GRIDS[0];
 }
+/* 12 种动物脸的 AI 位图（透明 PNG，tools/mkitem.js 出图：去背 + 去水印 + 羽化）。
+   顺序必须和下面的 ANIMALS 数组一一对应 —— 位图按索引取，矢量版只当兜底。
+   图没解码完（或 base64 出问题时）drawAnimalFace 会退回矢量绘制，不会开天窗。 */
+var ANIMAL_SRC = [
+  'data:image/png;base64,__AN0_B64__',
+  'data:image/png;base64,__AN1_B64__',
+  'data:image/png;base64,__AN2_B64__',
+  'data:image/png;base64,__AN3_B64__',
+  'data:image/png;base64,__AN4_B64__',
+  'data:image/png;base64,__AN5_B64__',
+  'data:image/png;base64,__AN6_B64__',
+  'data:image/png;base64,__AN7_B64__',
+  'data:image/png;base64,__AN8_B64__',
+  'data:image/png;base64,__AN9_B64__',
+  'data:image/png;base64,__AN10_B64__',
+  'data:image/png;base64,__AN11_B64__'
+];
+var ANIMAL_IMG = [];
+for (var _ai = 0; _ai < ANIMAL_SRC.length; _ai++) {
+  ANIMAL_IMG[_ai] = new Image();
+  ANIMAL_IMG[_ai].src = ANIMAL_SRC[_ai];
+}
+/* 暴露给测试：代码整体在 IIFE 里，外面拿不到 ANIMAL_IMG。
+   用 Object.assign 而不是直接赋值 —— g-spot 也要往这里挂东西，直接赋值会互相覆盖。
+   p4 启动时会把 __fsmExtras 并进 window.__fsm。 */
+window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
+  ANIMAL_IMG: ANIMAL_IMG,
+  ANIMAL_SRC: ANIMAL_SRC
+});
 var ANIMALS = [
   { fur:'#e9e9ef', ear:'pointy', eye:'#5ec2f0', nose:'#f2909f' },
   { fur:'#ffd45e', ear:'none',   eye:'#ffffff', beak:true },
@@ -475,6 +504,16 @@ var ANIMALS = [
 ];
 function drawAnimalFace(cx, cy, s, k){
   var a = ANIMALS[k % ANIMALS.length];
+  /* 位图优先，矢量脸降级为兜底。
+     高度取 74*s：矢量版在 s 尺度下从耳朵尖(-48)到下巴(+30)一共 78 单位高，
+     位图是去背后紧贴主体的，74 画出来的视觉大小和矢量版基本齐平。
+     外层翻牌动画的 ctx.scale(sq,1) 会一并作用到位图上，不用额外处理。 */
+  var img = ANIMAL_IMG[k % ANIMAL_IMG.length];
+  if (img && img.complete && img.naturalWidth) {
+    var ih = 74 * s, iw = ih * (img.naturalWidth / img.naturalHeight);
+    ctx.drawImage(img, cx - iw / 2, cy - ih / 2, iw, ih);
+    return;
+  }
   ctx.save();
   ctx.translate(cx, cy);
   ctx.scale(s, s);

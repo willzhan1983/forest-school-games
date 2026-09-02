@@ -587,21 +587,26 @@ async function sample(page, x, y, w, h) {
 
   /* ---- T23 角色立绘 base64 能真实解码（不是走兜底图） ---- */
   const htmlSrc = fs.readFileSync(SRC, 'utf8');
-  const b64s = (htmlSrc.match(/data:image\/png;base64,([A-Za-z0-9+/=]{1000,})/g) || []).map(s => s.split(',')[1]);
-  const decoded = await page.evaluate(list => Promise.all(list.map(b => new Promise(res => {
+  /* 整条 data URI 一起抓（含 mime），不是只抓 base64 段：
+     找不同的背景图是 JPEG，写死 png 前缀的话它会被标成 DECODE-FAIL。 */
+  const uris = htmlSrc.match(/data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]{1000,}/g) || [];
+  const decoded = await page.evaluate(list => Promise.all(list.map(u => new Promise(res => {
     const im = new Image();
     im.onload = () => res({ ok: true, w: im.naturalWidth, h: im.naturalHeight });
     im.onerror = () => res({ ok: false });
-    im.src = 'data:image/png;base64,' + b;
-  }))), b64s);
+    im.src = u;
+  }))), uris);
   /* 分两类验：角色立绘（约 200×220）和掉落道具（统一 128 高、宽度不等）。
      之前写死「正好 2 张且都 >100」，加了三张道具素材就误判失败 ——
      按尺寸分档比数个数稳，加素材不用再改断言。 */
-  const chars = decoded.filter(d => d.ok && d.w >= 150 && d.h >= 150);
-  const items = decoded.filter(d => d.ok && d.h === 128 && d.w > 50 && d.w < 150);
-  const allOk = chars.length >= 2 && items.length >= 3;
+  /* 分三档：立绘（~200×220）、道具/动物（统一 128 高）、场景背景（640×560 的 JPEG）。
+     之前写死「正好 2 张且都 >100」，加素材就误判失败 —— 按尺寸分档比数个数稳。 */
+  const chars = decoded.filter(d => d.ok && d.w >= 150 && d.w <= 300 && d.h >= 150);
+  const items = decoded.filter(d => d.ok && d.h >= 110 && d.h <= 128 && d.w > 50 && d.w < 150);
+  const bgs = decoded.filter(d => d.ok && d.w > 300);
+  const allOk = chars.length >= 2 && items.length >= 3 && bgs.length >= 1;
   rec('T23', '立绘与道具 base64 全部解码成功', allOk,
-    `立绘 ${chars.length} 张 / 道具 ${items.length} 张 :: ` +
+    `立绘 ${chars.length} 张 / 道具 ${items.length} 张 / 背景 ${bgs.length} 张 :: ` +
     decoded.map((d, i) => `#${i}:${d.ok ? d.w + 'x' + d.h : 'DECODE-FAIL'}`).join(' '));
 
   /* ---- T24 难度真的改变数值（不是只改了个标签） ---- */
