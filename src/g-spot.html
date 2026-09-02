@@ -33,16 +33,21 @@ SPOT_BG_IMG.src = 'data:image/jpeg;base64,__SPOTBG_B64__';
    bs/bl —— 基准色的饱和度/明度。染色时按 目标S/bs、目标L/bl 的比例一起平移，
             不能只换色相 —— tree 的 #3f8f4f（亮绿）和 #2f7a46（深绿）色相只差
             6°，全靠明度区分，只换色相的话这两档染完一模一样，根本找不出来
-   pxW/pxH — 位图实际像素，用来算绘制宽度（drawH * pxW/pxH），不用等图解码完 */
+   pxW/pxH — 位图实际像素，用来算绘制宽度（drawH * pxW/pxH），不用等图解码完
+
+   注意：src 必须直接写整条 data URI，不能只放裸 base64 再在代码里拼前缀。
+   线上复验（verify-live.js 的 V2）是把 index.html 抓回来扫 `data:image/...`
+   逐个解码的，拆开拼的话 HTML 文本里根本不存在完整的 data URI，这 8 张
+   图会整批漏验 —— 上线后第一次复验就是这么漏的（只扫到 18 张，实际 26 张）。 */
 var SPOT_ART = {
-  tree:      { drawH:94, ay:1,   hue:105, bs:0.84, bl:0.44, pxW:104, pxH:128, src:'__SP_TREE_B64__' },
-  bush:      { drawH:49, ay:1,   hue:125, bs:1.00, bl:0.48, pxW:128, pxH:79,  src:'__SP_BUSH_B64__' },
-  mushroom:  { drawH:36, ay:1,   hue:355, bs:0.75, bl:0.61, pxW:122, pxH:128, src:'__SP_MUSHROOM_B64__' },
-  flower:    { drawH:41, ay:1,   hue:55,  bs:0.98, bl:0.51, pxW:98,  pxH:128, src:'__SP_FLOWER_B64__' },
-  rock:      { drawH:28, ay:1,   hue:-1,  bs:1,    bl:1,    pxW:128, pxH:119, src:'__SP_ROCK_B64__' },
-  cloud:     { drawH:47, ay:0.5, hue:-1,  bs:1,    bl:1,    pxW:128, pxH:83,  src:'__SP_CLOUD_B64__' },
-  bird:      { drawH:27, ay:0.5, hue:205, bs:1.00, bl:0.50, pxW:121, pxH:128, src:'__SP_BIRD_B64__' },
-  butterfly: { drawH:26, ay:0.5, hue:275, bs:0.70, bl:0.63, pxW:128, pxH:105, src:'__SP_BUTTERFLY_B64__' }
+  tree:      { drawH:94, ay:1,   hue:105, bs:0.84, bl:0.44, pxW:104, pxH:128, src:'data:image/png;base64,__SP_TREE_B64__' },
+  bush:      { drawH:49, ay:1,   hue:125, bs:1.00, bl:0.48, pxW:128, pxH:79,  src:'data:image/png;base64,__SP_BUSH_B64__' },
+  mushroom:  { drawH:36, ay:1,   hue:355, bs:0.75, bl:0.61, pxW:122, pxH:128, src:'data:image/png;base64,__SP_MUSHROOM_B64__' },
+  flower:    { drawH:41, ay:1,   hue:55,  bs:0.98, bl:0.51, pxW:98,  pxH:128, src:'data:image/png;base64,__SP_FLOWER_B64__' },
+  rock:      { drawH:28, ay:1,   hue:-1,  bs:1,    bl:1,    pxW:128, pxH:119, src:'data:image/png;base64,__SP_ROCK_B64__' },
+  cloud:     { drawH:47, ay:0.5, hue:-1,  bs:1,    bl:1,    pxW:128, pxH:83,  src:'data:image/png;base64,__SP_CLOUD_B64__' },
+  bird:      { drawH:27, ay:0.5, hue:205, bs:1.00, bl:0.50, pxW:121, pxH:128, src:'data:image/png;base64,__SP_BIRD_B64__' },
+  butterfly: { drawH:26, ay:0.5, hue:275, bs:0.70, bl:0.63, pxW:128, pxH:105, src:'data:image/png;base64,__SP_BUTTERFLY_B64__' }
 };
 (function(){
   for(var k in SPOT_ART){
@@ -50,7 +55,7 @@ var SPOT_ART = {
       a.img = new Image();
       a.img.onload = function(){ a.ready = true; };
       a.img.onerror = function(){ a.ready = false; a.img = null; };
-      a.img.src = 'data:image/png;base64,' + a.src;
+      a.img.src = a.src;
     })(SPOT_ART[k]);
   }
 })();
@@ -602,5 +607,5 @@ function drawSpot(){
 window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
   Spot:Spot, spotPanel:spotPanel, spotCfg:spotCfg, spotScore:spotScore,
   SPOT_BG_IMG:SPOT_BG_IMG, SPOT_ART:SPOT_ART, SPOT_PAL:SPOT_PAL,
-  SPOT_KINDS:SPOT_KINDS, spotTinted:spotTinted
+  SPOT_KINDS:SPOT_KINDS, spotTinted:spotTinted, SPOT_DRAW:SPOT_DRAW
 });

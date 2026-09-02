@@ -14,6 +14,7 @@
  * 检查项 V1~V10：加载健康度 + 素材解码 + 尺寸/速度机制 + 像素级渲染 + 竖屏。
  */
 const puppeteer = require('puppeteer-core');
+const spotMatch = require('../tests/lib-spot-match.js');
 
 const URL = process.env.TARGET_URL || 'https://willzhan1983.github.io/forest-school-games/';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -55,36 +56,53 @@ function rec(id, name, pass, detail) {
      1) list.length < 12 的上限是只有 5 张素材时写的，现在一共 18 张，
         不提上限就只能验到前 12 张，后加的动物图线上坏了也发现不了
      2) 正则只认 png，找不同的背景图是 JPEG，整张被漏掉 —— 改成整条
-        data URI 一起抓，mime 跟着走，不会把 JPEG 当 png 解不出来。 */
+        data URI 一起抓，mime 跟着走，不会把 JPEG 当 png 解不出来。
+     3) 直接 fetch(location.href) 拿到的是 CDN 缓存里的旧文件。上线后第一次
+        复验就撞上了：页面本身跑的是新版（V13 的 8 类景物位图全部解码成功），
+        但 fetch 回来只有 18 张素材，比构建产物少 8 张 —— 缓存 key 相同，
+        CDN 照旧把上一版 HTML 递了回来。所以取两份：带时间戳的那份绕开缓存
+        用来判，原 URL 那份只作参考，不一致说明缓存还没追上，提示但不判失败。 */
   const imgs = await page.evaluate(async () => {
-    const html = await (await fetch(location.href)).text();
-    const re = /data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]{200,}/g;
-    const list = []; let m;
-    while ((m = re.exec(html)) !== null && list.length < 40) {
-      const d = await new Promise(r => {
-        const im = new Image();
-        im.onload = () => r({ w: im.naturalWidth, h: im.naturalHeight });
-        im.onerror = () => r({ w: 0, h: 0 });
-        im.src = m[0];
-      });
-      list.push(d);
-    }
-    return list;
+    const bust = (u) => u + (u.indexOf('?') < 0 ? '?' : '&') + '_=' + Date.now();
+    const grab = async (url) => {
+      const html = await (await fetch(url)).text();
+      const re = /data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]{200,}/g;
+      const list = []; let m;
+      while ((m = re.exec(html)) !== null && list.length < 60) list.push(m[0]);
+      return list;
+    };
+    const decode = async (list) => {
+      const out = [];
+      for (const u of list) {
+        out.push(await new Promise(r => {
+          const im = new Image();
+          im.onload = () => r({ w: im.naturalWidth, h: im.naturalHeight });
+          im.onerror = () => r({ w: 0, h: 0 });
+          im.src = u;
+        }));
+      }
+      return out;
+    };
+    const fresh = await grab(bust(location.href));
+    const asIs = await grab(location.href);
+    return { list: await decode(fresh), cached: asIs.length };
   });
-  /* 第三个坑：分档口径要能兜住所有素材，不然新加的图线上坏了也统计不到。
+  const imgList = imgs.list;
+  /* 第四个坑：分档口径要能兜住所有素材，不然新加的图线上坏了也统计不到。
      之前按 h 在 110~130 才算小素材，找不同的 bush(128×79)、cloud(128×83)、
      butterfly(128×105) 三张整张漏验。改成按「比立绘小、比 50px 大」划档，
      并加一条 unclassified 兜底：有任何一张没被归类就直接判失败。 */
-  const bigOnes = imgs.filter(d => d.w > 300);                      /* 场景背景 640×560 */
-  const chars = imgs.filter(d => d.w >= 150 && d.w <= 300 && d.h >= 150);   /* 猫头鹰立绘 */
-  const items = imgs.filter(d => d.w > 50 && d.w < 150 && d.h < 150);       /* 道具/动物/景物 */
-  const unclassified = imgs.length - bigOnes.length - chars.length - items.length;
-  const imgsOk = imgs.every(d => d.w > 0 && d.h > 0) &&
+  const bigOnes = imgList.filter(d => d.w > 300);                          /* 场景背景 640×560 */
+  const chars = imgList.filter(d => d.w >= 150 && d.w <= 300 && d.h >= 150); /* 猫头鹰立绘 */
+  const items = imgList.filter(d => d.w > 50 && d.w < 150 && d.h < 150);     /* 道具/动物/景物 */
+  const unclassified = imgList.length - bigOnes.length - chars.length - items.length;
+  const imgsOk = imgList.every(d => d.w > 0 && d.h > 0) &&
     chars.length >= 2 && items.length >= 23 && bigOnes.length >= 1 && unclassified === 0;
   rec('V2', '全部素材（2 立绘 + 23 小图 + 1 背景）线上完整可解码', imgsOk,
-    `共 ${imgs.length} 张（立绘 ${chars.length} / 小图 ${items.length} / 背景 ${bigOnes.length}` +
-    `${unclassified ? ' / 未归类 ' + unclassified : ''}）：` +
-    imgs.map(d => d.w > 0 ? `${d.w}×${d.h}` : 'DECODE-FAIL').join(' '));
+    `共 ${imgList.length} 张（立绘 ${chars.length} / 小图 ${items.length} / 背景 ${bigOnes.length}` +
+    `${unclassified ? ' / 未归类 ' + unclassified : ''}）` +
+    `${imgs.cached !== imgList.length ? `｜CDN 缓存仍是旧版（${imgs.cached} 张）` : ''}：` +
+    imgList.map(d => d.w > 0 ? `${d.w}×${d.h}` : 'DECODE-FAIL').join(' '));
 
   /* V3 掉落物尺寸。写死过 34，后来按画布短边改成 48。 */
   const szLand = await page.evaluate(() => ({ s: window.__fsm.itemSize(), W: window.__fsm.W, H: window.__fsm.H }));
@@ -267,45 +285,16 @@ function rec(id, name, pass, detail) {
     `背景图宽 ${spotArt.bgW}px 上部 rgb(${spotArt.up.join(',')}) 下部 rgb(${spotArt.dn.join(',')})`);
 
   /* V13 找不同的 8 类景物位图线上真的画出来了。
-     判据同样不能用整幅面板的变化率 —— 面板 444×396，9 个景物才占一成多面积，
-     背景一摊薄只剩 5%，画没画上去都测不出来。逐个景物在自己的包围盒中心取样。 */
-  const propArt = await page.evaluate(async () => {
-    const f = window.__fsm;
-    const cv = document.getElementById('game');
-    const sx = cv.width / 960, sy = cv.height / 540;
-    const c = cv.getContext('2d');
-    const p0 = f.spotPanel(0);
-    const props = f.Spot.L.filter(p => !p.gone).map(p => ({ t: p.t, x: p.x, y: p.y, s: p.s }));
-    const grab = () => props.map(p => {
-      const a = f.SPOT_ART[p.t];
-      const h = a.drawH * p.s, w = h * a.pxW / a.pxH;
-      const bw = Math.max(2, Math.round(w * sx)), bh = Math.max(2, Math.round(h * sy * 0.5));
-      const cx = (p0.x + p.x) * sx, cy = (p0.y + p.y - h * a.ay + h / 2) * sy;
-      return Array.from(c.getImageData(Math.round(cx - bw / 2), Math.round(cy - bh / 2), bw, bh).data);
-    });
-    const A = grab();
-    for (const k of Object.keys(f.SPOT_ART)) f.SPOT_ART[k].ready = false;
-    await new Promise(r => setTimeout(r, 500));
-    const B = grab();
-    for (const k of Object.keys(f.SPOT_ART)) f.SPOT_ART[k].ready = true;
-    const pct = A.map((a, i) => {
-      const b = B[i];
-      let diff = 0, n = 0;
-      for (let k = 0; k < Math.min(a.length, b.length); k += 4) {
-        n++;
-        if (Math.abs(a[k] - b[k]) + Math.abs(a[k + 1] - b[k + 1]) + Math.abs(a[k + 2] - b[k + 2]) > 24) diff++;
-      }
-      return n ? Math.round(diff / n * 100) : 0;
-    });
-    const decoded = Object.keys(f.SPOT_ART)
-      .filter(k => f.SPOT_ART[k].img && f.SPOT_ART[k].img.naturalWidth > 0);
-    return { pct: pct, n: props.length, decoded: decoded.length };
-  });
-  const avgPct = propArt.pct.reduce((a, b) => a + b, 0) / (propArt.pct.length || 1);
+     比对逻辑跟本地 ART9 共用一份（tests/lib-spot-match.js）——
+     拿位图自己的 alpha 当 mask 去主画布上逐像素验色，不靠「位图 vs 矢量
+     变化了多少」这种带临界值的判据（线上就是被它坑过：bush 27%、有个元素
+     正好卡在阈值 20 上，时好时坏）。 */
+  const decoded = await page.evaluate(() => Object.keys(window.__fsm.SPOT_ART)
+    .filter(k => window.__fsm.SPOT_ART[k].img && window.__fsm.SPOT_ART[k].img.naturalWidth > 0).length);
+  const propArt = await spotMatch.collect(page, wait);
   rec('V13', '找不同 8 类景物位图线上解码且真画在场景里',
-    propArt.decoded === 8 && propArt.n > 0 && propArt.pct.every(p => p > 20) && avgPct > 40,
-    `解码 ${propArt.decoded}/8 类，${propArt.n} 个景物差异率 ${propArt.pct.join('%,')}%，` +
-    `平均 ${avgPct.toFixed(0)}%（阈值 每个 >20%、平均 >40%）`);
+    decoded === 8 && propArt.pass,
+    `解码 ${decoded}/8 类 ｜ ` + spotMatch.detail(propArt));
 
   /* V14 景物染色后各档颜色线上仍然分得开。
      这是位图方案最脆的一环：调色板或染色算法一动，两档染完可能几乎一样，

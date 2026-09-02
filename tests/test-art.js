@@ -11,6 +11,7 @@
  */
 const puppeteer = require('puppeteer-core');
 const path = require('path');
+const spotMatch = require('./lib-spot-match.js');
 
 const URL = process.env.TARGET_URL || 'http://127.0.0.1:8931/index.html';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -191,62 +192,23 @@ async function sample(page, x, y, w, h) {
     artKeys.length === 8 && artKeys.every(k => artImgs[k].ok),
     artKeys.map(k => k + ':' + artImgs[k].w + 'x' + artImgs[k].h).join(' '));
 
-  /* ---- ART9 每个景物画的都是 AI 位图，不是悄悄走了矢量 ----
-     判据不能拿整个面板的像素变化率：面板 444×396，9 个景物加起来才占一成多
-     面积，背景一摊薄，位图换矢量只有 5% 的像素在变 —— 信号被稀释没了，
-     位图画没画上去都测不出来。所以逐个景物在自己的包围盒中心取样。
-     只置 ready=false（不动 src）：drawSpotProp 就走矢量分支，图对象还活着，
-     还原时置回 true 即可，不用重建 Image。 */
-  const propList = await page.evaluate(() => window.__fsm.Spot.L
-    .filter(p => !p.gone)
-    .map(p => ({ t: p.t, x: p.x, y: p.y, s: p.s })));
-  const grabProps = (props) => page.evaluate((props) => {
-    const f = window.__fsm;
-    const cv = document.getElementById('game');
-    const sx = cv.width / 960, sy = cv.height / 540;
-    const c = cv.getContext('2d');
-    const p0 = f.spotPanel(0);
-    return props.map(p => {
-      const a = f.SPOT_ART[p.t];
-      const h = a.drawH * p.s, w = h * a.pxW / a.pxH;   /* 与 drawSpotProp 同一套换算 */
-      const bw = Math.max(2, Math.round(w * sx));
-      const bh = Math.max(2, Math.round(h * sy * 0.5));  /* 取中间一半高，避开边缘背景 */
-      const cx = (p0.x + p.x) * sx, cy = (p0.y + p.y - h * a.ay + h / 2) * sy;
-      return Array.from(c.getImageData(Math.round(cx - bw / 2), Math.round(cy - bh / 2), bw, bh).data);
-    });
-  }, props);
-
-  const propBmp = await grabProps(propList);
-  await page.evaluate(() => {
-    for (const k of Object.keys(window.__fsm.SPOT_ART)) window.__fsm.SPOT_ART[k].ready = false;
+  /* ---- ART9 / ART10 景物位图 ----
+     比对逻辑全在 tests/lib-spot-match.js 里（线上复验 V13 用的是同一份），
+     这里只负责取结果和判。collect 会摆一个 8 类各一个的固定场景 ——
+     随机一局只出现 5~6 类，永远验不全。
+     它内部采完位图版会把 ready 置 false 再采矢量版，趁那个状态用 onVec
+     顺手把 ART10 的兜底样本取了。 */
+  let vecAll = null;
+  const art9 = await spotMatch.collect(page, wait, async (pg) => {
+    const p0v = await pg.evaluate(() => window.__fsm.spotPanel(0));
+    vecAll = await sample(pg, p0v.x + 8, p0v.y + 8, p0v.w - 16, p0v.h - 16);
   });
-  await wait(500);
-  const propVec = await grabProps(propList);
-  const perProp = propBmp.map((A, i) => {
-    const B = propVec[i];
-    let diff = 0, n = 0;
-    for (let k = 0; k < Math.min(A.length, B.length); k += 4) {
-      n++;
-      if (Math.abs(A[k] - B[k]) + Math.abs(A[k + 1] - B[k + 1]) + Math.abs(A[k + 2] - B[k + 2]) > 24) diff++;
-    }
-    return { t: propList[i].t, pct: n ? Math.round(diff / n * 100) : 0 };
-  });
-  const avgProp = perProp.reduce((s, p) => s + p.pct, 0) / (perProp.length || 1);
-  rec('ART9', '每个景物画的都是 AI 位图（逐个比对位图 vs 矢量）',
-    perProp.length > 0 && perProp.every(p => p.pct > 20) && avgProp > 40,
-    perProp.map(p => `${p.t} ${p.pct}%`).join(' ') +
-    ` ← 平均 ${avgProp.toFixed(0)}%（阈值 每个 >20%、平均 >40%）`);
+  rec('ART9', '8 类景物画的都是 AI 位图（位图 alpha 做 mask 逐像素比对）',
+    art9.pass, spotMatch.detail(art9));
 
-  const vecAll = await sample(page, p0.x + 8, p0.y + 8, p0.w - 16, p0.h - 16);
-
-  /* ---- ART10 位图失效时矢量兜底仍能画满场景 ---- */
   rec('ART10', '位图失效时矢量兜底仍能画出完整场景',
-    vecAll.colors > 10 && vecAll.lum > 120,
-    `colors=${vecAll.colors} lum=${vecAll.lum}（阈值 colors>10 lum>120）`);
-  await page.evaluate(() => {
-    for (const k of Object.keys(window.__fsm.SPOT_ART)) window.__fsm.SPOT_ART[k].ready = true;
-  });
-  await wait(400);
+    !!vecAll && vecAll.colors > 10 && vecAll.lum > 120,
+    vecAll ? `colors=${vecAll.colors} lum=${vecAll.lum}（阈值 colors>10 lum>120）` : '取样失败');
 
   /* ---- ART11 染色后每档颜色仍然分得开（核心回归）----
      景物换成位图后，「换个颜色」这个差异全靠染色实现。
