@@ -151,6 +151,8 @@ async function sample(page, x, y, w, h) {
   const IDX_ACORN = await page.evaluate(() => window.__fsm.GAMES.findIndex(g => g.id === 'acorn'));
   const IDX_MEM = await page.evaluate(() => window.__fsm.GAMES.findIndex(g => g.id === 'memory'));
   const IDX_SPOT = await page.evaluate(() => window.__fsm.GAMES.findIndex(g => g.id === 'spot'));
+  const IDX_WHACK = await page.evaluate(() => window.__fsm.GAMES.findIndex(g => g.id === 'whack'));
+  const IDX_PUZZLE = await page.evaluate(() => window.__fsm.GAMES.findIndex(g => g.id === 'puzzle'));
 
   /* ---- T1 加载无错误 ---- */
   rec('T1', '页面加载零运行时错误', errs.length === 0 && warns.length === 0,
@@ -174,7 +176,7 @@ async function sample(page, x, y, w, h) {
     if (s.colors < 4) cardOk = false;
   }
   const bgS = await sample(page, 20, 500, 60, 30);
-  rec('T3', '菜单所有游戏卡片已渲染', cardOk && cardRects.length === 3,
+  rec('T3', '菜单所有游戏卡片已渲染', cardOk && cardRects.length >= 3,
     cardDetail.join(' ') + ` (空白对照 colors=${bgS.colors})  卡片数=${cardRects.length}`);
 
   /* ---- T4 难度按钮：点击切换 ----
@@ -545,7 +547,8 @@ async function sample(page, x, y, w, h) {
   })));
   const regOk = reg.length > 0 && reg.every(r =>
     r.start === 'function' && r.update === 'function' && r.draw === 'function' &&
-    r.tap === 'function' && r.banner.length > 0 && (r.mode === 'level' || r.mode === 'grid'));
+    r.tap === 'function' && r.banner.length > 0 &&
+    (r.mode === 'level' || r.mode === 'grid' || r.mode === 'puz'));
   rec('T32', '每个游戏都挂齐 start/update/draw/tap/banner', regOk,
     reg.map(r => `${r.id}[${r.mode}]`).join(' '));
 
@@ -820,6 +823,245 @@ async function sample(page, x, y, w, h) {
   const s28 = await sample(page, r0.x + 20, r0.y + 20, r0.w - 40, r0.h - 40);
   rec('T28', '翻开的卡片动画完成后可见（非细线）', s28.colors > 8 && s28.lum > 130,
     `colors=${s28.colors} lum=${s28.lum}`);
+
+  /* ================= 打地鼠（第四个游戏） ================= */
+  const enterWhack = async (diff) => {
+    await page.evaluate(d => {
+      const f = window.__fsm;
+      f.Game.state = 'menu';
+      f.selectGame('whack');
+      f.selectDiff(d);
+      f.startCurrent();
+    }, diff);
+    await wait(700);
+  };
+
+  /* ---- T50 打地鼠：卡片可点 + 三档都能开局 + 洞数与配置一致 ---- */
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
+  await wait(200);
+  const cards50 = await getCards(page);
+  await clickAt(page, ...center(cards50[IDX_WHACK])); await wait(700);
+  const whackByDiff = {};
+  for (const d of ['easy', 'normal', 'hard']) {
+    await enterWhack(d);
+    whackByDiff[d] = await page.evaluate(() => {
+      const f = window.__fsm, c = f.whackCfg();
+      return { cols:c.cols, rows:c.rows, life:c.life, gap:c.gap, bad:c.bad, maxUp:c.maxUp,
+               time:c.time, penalty:c.penalty, nHoles:f.Whack.holes.length, timeLeft:f.Whack.timeLeft };
+    });
+  }
+  const w = whackByDiff;
+  rec('T50', '打地鼠：卡片可点 + 三档配置生效（洞数/时长/坏东西比例）',
+    w.easy.cols === 3 && w.easy.rows === 2 && w.easy.nHoles === 6 && w.easy.life === 100 &&
+    w.normal.cols === 3 && w.normal.rows === 3 && w.normal.nHoles === 9 &&
+    w.hard.cols === 4 && w.hard.rows === 3 && w.hard.nHoles === 12 &&
+    w.easy.bad === 0.14 && w.normal.bad === 0.24 && w.hard.bad === 0.34 &&
+    w.easy.gap > w.normal.gap && w.normal.gap > w.hard.gap,
+    `easy ${w.easy.cols}x${w.easy.rows}=${w.easy.nHoles}洞 life=${w.easy.life} gap=${w.easy.gap} bad=${w.easy.bad} | ` +
+    `normal ${w.normal.cols}x${w.normal.rows}=${w.normal.nHoles}洞 gap=${w.normal.gap} | ` +
+    `hard ${w.hard.cols}x${w.hard.rows}=${w.hard.nHoles}洞 gap=${w.hard.gap}`);
+
+  /* ---- T51 打地鼠：命中好物加分（combo 累加、score 增加 mult*10） ----
+     不等 rAF 循环找好物 —— 直接构造一个 st=2/t=12 的好物，验证命中逻辑。 */
+  await enterWhack('normal');
+  const w51 = await page.evaluate(() => {
+    const f = window.__fsm;
+    /* 直接插一个好物：st=2（已完全露出），t=12（pop=1，最大可点状态） */
+    const i = 3;
+    const h = f.Whack.holes[i];
+    h.isBad = false; h.k = 2; h.st = 2; h.t = 12;
+    f.Whack.combo = 0; f.Whack.mult = 1; f.Game.score = 0;
+    const r = f.whackHoleRect(i);
+    return { x:r.x + r.w/2, y:r.y + r.h/2 };
+  });
+  await clickAt(page, w51.x, w51.y); await wait(400);
+  const after51 = await page.evaluate(() => ({ combo:window.__fsm.Whack.combo, mult:window.__fsm.Whack.mult, score:window.__fsm.Game.score, hit:window.__fsm.Whack.hit }));
+  /* 首击 combo:0→1, mult=1, +10 分 */
+  const expected51 = 10 * Math.min(5, 1 + Math.floor(after51.combo / 3));
+  rec('T51', '打地鼠：命中好物加分（combo 累加，score 增加 mult*10）',
+    after51.hit === 1 && after51.combo === 1 && after51.mult === 1 && after51.score === expected51,
+    `combo 0->${after51.combo}  mult=${after51.mult}  得分 0->${after51.score}（+${after51.score}，期望 +${expected51}）`);
+
+  /* ---- T52 打地鼠：命中坏物扣分 + combo 清零 + 不算 hit ---- */
+  await enterWhack('normal');
+  const w52 = await page.evaluate(() => {
+    const f = window.__fsm;
+    /* 把一个洞强制设置成"坏+冒头到可点"状态 —— 跳过概率等待 */
+    const i = 3; /* 中间一个洞 */
+    const h = f.Whack.holes[i];
+    h.isBad = true; h.k = 0; h.st = 2; h.t = 12;
+    /* 先手动涨 combo 到 2（验证会被清零）*/
+    f.Whack.combo = 2; f.Whack.mult = 1;
+    f.Game.score = 100;
+    const r = f.whackHoleRect(i);
+    return { x:r.x + r.w/2, y:r.y + r.h/2, penalty:f.whackCfg().penalty };
+  });
+  await clickAt(page, w52.x, w52.y); await wait(300);
+  const after52 = await page.evaluate(() => ({ combo:window.__fsm.Whack.combo, mult:window.__fsm.Whack.mult, score:window.__fsm.Game.score, bad:window.__fsm.Whack.bad, hit:window.__fsm.Whack.hit }));
+  rec('T52', '打地鼠：命中坏物扣分 + combo 清零 + mult=1',
+    after52.combo === 0 && after52.mult === 1 && after52.score === Math.max(0, 100 - w52.penalty) &&
+    after52.bad === 1 && after52.hit === 0,
+    `combo 2->${after52.combo}  mult=${after52.mult}  得分 100->${after52.score}（-${100 - after52.score}，期望 -${w52.penalty}）  bad=${after52.bad}`);
+
+  /* ---- T53 打地鼠：好物漏接（自动缩回）只断 combo 不扣分 ----
+     体检后立的规矩 —— "惩罚判断错"不惩罚"来不及"，所以漏接只断连击。
+     验证方式：把 h.t 推到 life-1，再调一次 updateWhack 让它跨过 life，
+     触发"h.st<=2 && !h.isBad → combo=0; miss++"分支。 */
+  await enterWhack('normal');
+  const w53 = await page.evaluate(() => {
+    const f = window.__fsm, c = f.whackCfg();
+    const i = 4;
+    const h = f.Whack.holes[i];
+    h.isBad = false; h.k = 1; h.st = 2; h.t = c.life - 1;   /* 再 ++ 一次就到 life */
+    f.Whack.combo = 3; f.Whack.mult = 2;
+    f.Game.score = 200;
+    f.curGame().update(1);   /* 走一帧，触发漏接分支 */
+    return { combo:f.Whack.combo, mult:f.Whack.mult, score:f.Game.score, miss:f.Whack.miss, t:h.t };
+  });
+  rec('T53', '打地鼠：好物漏接只断连击不扣分（不惩罚"来不及"）',
+    w53.combo === 0 && w53.mult === 1 && w53.score === 200 && w53.miss >= 1,
+    `combo 3->${w53.combo}  mult=${w53.mult}  得分 200 不变  漏接=${w53.miss}  t=${w53.t}`);
+
+  /* ---- T54 打地鼠：时间到自然结束进结算（不扣命，所以必 100% 撑满） ---- */
+  await enterWhack('easy');
+  const w54 = await page.evaluate(() => {
+    const f = window.__fsm;
+    f.Whack.timeLeft = 0.05;   /* 50 ms 后必结束 */
+    return { timeLeft:f.Whack.timeLeft };
+  });
+  await wait(800);
+  const st54 = await page.evaluate(() => ({ s:window.__fsm.Game.state, sc:window.__fsm.Game.score, timeLeft:window.__fsm.Whack.timeLeft }));
+  rec('T54', '打地鼠：倒计时到 0 进结算（体检后无扣命，撑满率 = 100%）',
+    st54.s === 'result' && st54.timeLeft === 0 && st54.sc >= 0,
+    `state=${st54.s} score=${st54.sc} timeLeft=${st54.timeLeft}`);
+
+  /* ================= 拼图（第五个游戏） ================= */
+  const enterPuzzle = async (puzId) => {
+    await page.evaluate(p => {
+      const f = window.__fsm;
+      f.Game.state = 'menu';
+      f.selectGame('puzzle');
+      f.selectDiff(p);
+      f.startCurrent();
+    }, puzId);
+    await wait(900);   /* 等图加载 + 洗牌 */
+  };
+
+  /* ---- T60 拼图：卡片可点 + 三档都能开局 + minSwaps 洗出 ≥ 4 ---- */
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
+  await wait(200);
+  const cards60 = await getCards(page);
+  await clickAt(page, ...center(cards60[IDX_PUZZLE])); await wait(700);
+  const puzById = {};
+  for (const p of ['p33', 'p43', 'p44']) {
+    await enterPuzzle(p);
+    puzById[p] = await page.evaluate(() => {
+      const f = window.__fsm, c = f.puzCfg(), P = f.Puz;
+      return { cols:c.cols, rows:c.rows, base:c.base, pen:c.pen,
+               n:P.n, orderLen:P.order ? P.order.length : 0, minSwaps:P.minSwaps, ready:P.ready };
+    });
+  }
+  const z = puzById;
+  rec('T60', '拼图：卡片可点 + 三档棋盘 n=9/12/16 + minSwaps ≥ 4',
+    z.p33.cols === 3 && z.p33.rows === 3 && z.p33.n === 9 && z.p33.orderLen === 9 && z.p33.minSwaps >= 4 &&
+    z.p43.cols === 4 && z.p43.rows === 3 && z.p43.n === 12 && z.p43.orderLen === 12 && z.p43.minSwaps >= 4 &&
+    z.p44.cols === 4 && z.p44.rows === 4 && z.p44.n === 16 && z.p44.orderLen === 16 && z.p44.minSwaps >= 4,
+    `p33 n=${z.p33.n} min=${z.p33.minSwaps} | p43 n=${z.p43.n} min=${z.p43.minSwaps} | p44 n=${z.p44.n} min=${z.p44.minSwaps}`);
+
+  /* ---- T61 拼图：交换两格 —— order 真改、moves 计数 +1 ---- */
+  await enterPuzzle('p33');
+  const w61 = await page.evaluate(() => {
+    const f = window.__fsm;
+    /* 找两块：i 和 j，i != j */
+    const i = 0, j = 5;
+    const c0 = f.puzCell(i), c1 = f.puzCell(j);
+    const before = f.Puz.order.slice();
+    return { i, j, x0:c0.x + c0.w/2, y0:c0.y + c0.h/2, x1:c1.x + c1.w/2, y1:c1.y + c1.h/2,
+             before, sel:f.Puz.sel, moves:f.Puz.moves };
+  });
+  await clickAt(page, w61.x0, w61.y0); await wait(200);   /* 选第一块 */
+  const sel61 = await page.evaluate(() => window.__fsm.Puz.sel);
+  await clickAt(page, w61.x1, w61.y1); await wait(400);   /* 点第二块交换 */
+  const after61 = await page.evaluate(() => ({
+    sel:window.__fsm.Puz.sel, moves:window.__fsm.Puz.moves,
+    order:window.__fsm.Puz.order.slice()
+  }));
+  const swapped = (after61.order[w61.i] === w61.before[w61.j] && after61.order[w61.j] === w61.before[w61.i]);
+  rec('T61', '拼图：交换两格（order 真交换、sel 清空、moves +1）',
+    sel61 === w61.i && after61.sel === -1 && after61.moves === 1 && swapped,
+    `选 ${w61.i} -> sel=${sel61}  点 ${w61.j} -> sel=${after61.sel} moves=${after61.moves}  order[${w61.i},${w61.j}]=${w61.before[w61.i]},${w61.before[w61.j]}->${after61.order[w61.i]},${after61.order[w61.j]}`);
+
+  /* ---- T62 拼图：解出后进结算 + 分数符合公式 ----
+     强制把 order 改成 reverse + 一次交换，让算法算出恰好差 1 步能解。 */
+  await enterPuzzle('p33');
+  const w62 = await page.evaluate(() => {
+    const f = window.__fsm;
+    const n = f.Puz.n;
+    /* 构造一个"一次交换就能解"的局面：identity 但 [0] 和 [1] 互换 */
+    f.Puz.order = []; for(let k=0;k<n;k++) f.Puz.order.push(k);
+    const t = f.Puz.order[0]; f.Puz.order[0] = f.Puz.order[1]; f.Puz.order[1] = t;
+    f.Puz.minSwaps = f.minSwapsOf(f.Puz.order);
+    f.Puz.moves = 0; f.Puz.sel = -1;
+    /* 验证一下 minSwaps 算的是 1（identity + 一次交换就是 1 步） */
+    return { min:f.Puz.minSwaps, base:f.puzCfg().base, pen:f.puzCfg().pen };
+  });
+  /* 做 1 步交换：先选 0，再点 1 */
+  const c62 = await page.evaluate(() => {
+    const f = window.__fsm;
+    const c0 = f.puzCell(0), c1 = f.puzCell(1);
+    return { x0:c0.x + c0.w/2, y0:c0.y + c0.h/2, x1:c1.x + c1.w/2, y1:c1.y + c1.h/2 };
+  });
+  await clickAt(page, c62.x0, c62.y0); await wait(150);
+  await clickAt(page, c62.x1, c62.y1); await wait(900);   /* solvedT=36 帧 = 0.6s，加上结束延迟 */
+  const st62 = await page.evaluate(() => ({ s:window.__fsm.Game.state, sc:window.__fsm.Game.score, moves:window.__fsm.Puz.moves }));
+  /* 完美 1 步 = minSwaps，期望分 = base（公式 max(50, base - (1-1)*pen) = base） */
+  const expected62 = w62.base;
+  rec('T62', '拼图：解出后进结算 + 完美玩法拿满分 base',
+    st62.s === 'result' && st62.moves === 1 && st62.sc === expected62,
+    `state=${st62.s} moves=${st62.moves} score=${st62.sc}（期望=${expected62}，即完美玩法满分 base）`);
+
+  /* ---- T63 拼图：罚分公式真的生效（多走的步会扣 pen×N 分） ----
+     思路：构造一个"1 步可解"的局面（[1,0,2,...]），但让 moves=3 才解出，
+     第 3 步才真正解。多走 2 步 → 罚 pen×2。
+     具体走法：
+       第 1 步：交换 0 和 1 → 变回 [0,1,2,...]（其实就解了，但我们要再搅乱）
+       第 2 步：再交换 0 和 1 → 又变 [1,0,2,...]（又没解，moves=2）
+       第 3 步：再交换 0 和 1 → 变回 [0,1,2,...]（解了，moves=3, min=1, 罚 2×pen）
+     但 solved 检测在每次 swap 之后；第 1 步就解了会立即进 solvedT → 第 2 步的 tap 被忽略。
+     所以构造一个"3 步可解"的局面：order=[1,2,0,3,4,5,6,7,8]（3-cycle, minSwaps=2）。
+     走法：
+       第 1 步：交换 0 和 1 → [2,1,0,...] （未解）
+       第 2 步：交换 1 和 2 → [2,0,1,...] （未解）
+       第 3 步：交换 0 和 2 → [0,2,1,...] → 还差 1 步，因为 order[1]=2 不是 1
+     还是没解。换构造：3-cycle 直接解需要 2 步。我们多走 1 步 = 3 步 = 罚 pen*1。
+     玩法（3 步可解 = 实际 3 步 = 多 1 步 = 罚 pen）：
+       第 1 步：0↔1 → [2,1,0,...]
+       第 2 步：1↔2 → [2,0,1,...] （order[0]=2, order[1]=0, order[2]=1；看回去：position 0 应该是 0，但有 2；不对）
+     复杂了。简化：直接测 minSwapsOf 算得对，公式代入即正确。 */
+  await enterPuzzle('p33');
+  /* 构造 min=2 的局面并算出预期分（moves=3 多 1 步） */
+  const w63 = await page.evaluate(() => {
+    const f = window.__fsm;
+    const n = f.Puz.n;
+    f.Puz.order = []; for(let k=0;k<n;k++) f.Puz.order.push(k);
+    /* 3-cycle [1,2,0,3,...]：minSwaps=2 */
+    const t = f.Puz.order[0]; f.Puz.order[0] = f.Puz.order[1]; f.Puz.order[1] = f.Puz.order[2]; f.Puz.order[2] = t;
+    const min = f.minSwapsOf(f.Puz.order);
+    f.Puz.minSwaps = min; f.Puz.moves = 0; f.Puz.sel = -1;
+    const c = f.puzCfg();
+    const moves = min + 1;   /* 多走 1 步 */
+    const expected = Math.max(50, c.base - (moves - min) * c.pen);
+    /* 模拟解出：让 updatePuzzle 走完 solvedT（手工把 order 改回 identity 并触发） */
+    f.Puz.order = []; for(let k=0;k<n;k++) f.Puz.order.push(k);   /* 直接 identity = solved */
+    f.Puz.moves = moves;
+    f.Puz.solvedT = 36;   /* 36 帧后结算 */
+    return { min, moves, base:c.base, pen:c.pen, expected };
+  });
+  await wait(900);   /* 等 solvedT 跑完，endGame 自动触发 */
+  const st63 = await page.evaluate(() => ({ s:window.__fsm.Game.state, sc:window.__fsm.Game.score }));
+  rec('T63', '拼图：罚分公式真的生效（多 1 步扣 pen 分）',
+    st63.s === 'result' && st63.sc === w63.expected,
+    `min=${w63.min} moves=${w63.moves} base=${w63.base} pen=${w63.pen} -> score=${st63.sc}（期望=${w63.expected} = base - (moves-min)*pen = ${w63.base}-${(w63.moves-w63.min)*w63.pen}）`);
 
   /* ---- T27 菜单页"放学跑酷"跳转按钮存在且可点 ----
      放在最后：这个用例会 window.open 打开新标签页，

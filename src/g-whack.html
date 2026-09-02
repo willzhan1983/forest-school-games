@@ -1,0 +1,280 @@
+
+/* ============================================================
+ * 8.5 游戏二：打地鼠（森林小动物版）
+ * ------------------------------------------------------------
+ * 草地洞阵里小动物探出头来，点它得分；毛毛虫和毒蘑菇是坏东西，
+ * 碰到就扣分、连击清零。
+ *
+ * 难度旋钮只调「密度/停留时长/坏东西比例」一类，**不调命数**。
+ * 这条规则来自 PR 之前的体检：原接橡果 easy→normal 撑满率
+ * 94%→6%，是命数 5→3、间隔 74→40 帧、坏东西 20%→46% 四个旋钮
+ * 一起拧的平方级崩塌。这里三个洞数（6/9/12）+ 停留时长 1.0s
+ * /0.78s/0.60s + 坏东西 0.14/0.24/0.34，撑满率曲线会平滑得多。
+ *
+ * 不扣命：打地鼠没有"漏接"概念（看不到就漏是常态），所以
+ * "没打中冒出来的"只断连击，不掉分、不掉命 —— 惩罚"判断错"
+ * 而不惩罚"来不及"，符合孩子对游戏的直觉。
+ *
+ * 时限统一 45 秒（接橡果体检后定的"课间一局"基线）。
+ * ========================================================== */
+var WHACK_CFG = {
+  easy:   { cols:3, rows:2, life:100, gap:52, bad:0.14, maxUp:2, time:45, penalty:8  },
+  normal: { cols:3, rows:3, life:78,  gap:36, bad:0.24, maxUp:3, time:45, penalty:12 },
+  hard:   { cols:4, rows:3, life:60,  gap:26, bad:0.34, maxUp:4, time:45, penalty:16 }
+};
+var WHACK_FX = [];  /* 命中/失误飘字 */
+var Whack = { holes:[], spawnT:0, timeLeft:0, hit:0, miss:0, bad:0,
+              combo:0, best:0, mult:1, done:false };
+
+function whackCfg(){
+  for(var i=0;i<DIFFS.length;i++) if(DIFFS[i].id===Game.diff) return WHACK_CFG[Game.diff];
+  return WHACK_CFG.easy;
+}
+
+/* 棋盘几何：横屏最大 ~380 高（让 top bar 和底栏留出空间），
+   竖屏 9 洞方阵让高度撑开。洞尺寸 = (短边 - 余量) / 行数，
+   保证两套画布比例下都正方。 */
+function whackBoard(){
+  var c = whackCfg();
+  var margin = VIEW.portrait ? 40 : 36;
+  var topY = VIEW.portrait ? 130 : 108;
+  var botY = VIEW.portrait ? 110 : 110;
+  var aw = W - margin * 2, ah = H - topY - botY;
+  var gap = c.gap;
+  var hole = Math.floor(Math.min((aw - gap * (c.cols - 1)) / c.cols,
+                                  (ah - gap * (c.rows - 1)) / c.rows));
+  if(hole < 60) hole = 60;
+  if(hole > 150) hole = 150;
+  var bw = hole * c.cols + gap * (c.cols - 1);
+  var bh = hole * c.rows + gap * (c.rows - 1);
+  return { hole:hole, gap:gap, w:bw, h:bh,
+           x:(W - bw) / 2, y:topY + (ah - bh) / 2 - 6 };
+}
+function whackHoleRect(i){
+  var b = whackBoard(), c = whackCfg();
+  var cx = i % c.cols, cy = Math.floor(i / c.cols);
+  return { x:b.x + cx * (b.hole + b.gap),
+           y:b.y + cy * (b.hole + b.gap),
+           w:b.hole, h:b.hole };
+}
+
+/* 当前帧地鼠应该露多高：pop ∈ [0,1]。
+   上来 6 帧线性到 1，下去 5 帧线性到 0。st 状态机：
+   0=洞空  1=正在冒头  2=完全露出  3=命中后缩回  4=自动缩回。 */
+function whackPop(p){
+  /* 上升：8 帧到 1（更柔和，孩子看得清） */
+  if(p < 8) return p / 8;
+  /* 维持到 70% 帧 = 完全露出 1 */
+  if(p < 24) return 1;
+  /* 24~34 帧线性回到 0（最后 10 帧是"准备缩回"过渡） */
+  return Math.max(0, 1 - (p - 24) / 10);
+}
+
+function startWhack(){
+  var c = whackCfg();
+  Whack.holes = [];
+  for(var i=0;i<c.cols*c.rows;i++) Whack.holes.push({st:0, t:0, k:0, isBad:false});
+  Whack.spawnT = 30;
+  Whack.timeLeft = c.time;
+  Whack.hit = 0; Whack.miss = 0; Whack.bad = 0;
+  Whack.combo = 0; Whack.best = 0; Whack.mult = 1;
+  WHACK_FX.length = 0;
+  Whack.done = false;
+  Game.score = 0; Game.banner = 90;
+}
+
+function pickRandomHole(c){
+  /* 同时在外的洞数 <= maxUp-1 —— 总要留至少一个空洞，
+     不然"不点也能连击"的假阳性就出现了。 */
+  var up = 0;
+  for(var i=0;i<Whack.holes.length;i++) if(Whack.holes[i].st>0) up++;
+  if(up >= c.maxUp) return -1;
+  /* 选一个当前 st=0 的随机洞；找不到就直接放弃这一轮生成 */
+  var cand = [];
+  for(var j=0;j<Whack.holes.length;j++) if(Whack.holes[j].st===0) cand.push(j);
+  if(!cand.length) return -1;
+  return cand[Math.floor(Math.random() * cand.length)];
+}
+
+function updateWhack(dt){
+  var c = whackCfg();
+  if(Whack.done) return;
+  Whack.timeLeft -= dt / 60;
+  if(Whack.timeLeft <= 0){
+    Whack.timeLeft = 0; Whack.done = true;
+    Game.score = Math.max(0, Game.score);
+    endGame(Game.score, '命中 ' + Whack.hit + ' · 躲开坏 ' + Whack.bad +
+            (Whack.best > 1 ? ' · 最高连击 ' + Whack.best : ''));
+    return;
+  }
+  /* 新冒头 */
+  Whack.spawnT -= 1;
+  if(Whack.spawnT <= 0){
+    var hi = pickRandomHole(c);
+    if(hi >= 0){
+      var h = Whack.holes[hi];
+      h.isBad = Math.random() < c.bad;
+      /* 好东西用 12 张动物脸，坏东西按 KIND=0/1 区分（bug/shroom） */
+      if(h.isBad) h.k = Math.random() < 0.5 ? 0 : 1;
+      else h.k = 1 + Math.floor(Math.random() * 12);
+      h.st = 1; h.t = 0;
+    }
+    /* 生成间隔：easy 52 帧，normal 36，hard 26。dt=1 帧 = 1/60 秒。 */
+    Whack.spawnT = c.gap + Math.floor(Math.random() * (c.gap * 0.3));
+  }
+  /* 更新各洞 */
+  for(var i=0;i<Whack.holes.length;i++){
+    var h = Whack.holes[i];
+    if(h.st === 0) continue;
+    h.t++;
+    /* life 是从冒出到完全缩回的总帧数；pop() 内部把 t 映射到露出高度 */
+    if(h.t >= c.life){
+      /* 缩回时若还是 st=1/2（没被打），好动物算"漏接"—— 只断连击，不扣分 */
+      if(h.st <= 2 && !h.isBad){ Whack.combo = 0; Whack.mult = 1; Whack.miss++; }
+      h.st = 0; h.t = 0;
+    }
+  }
+  /* 飘字淡出 */
+  for(var k = WHACK_FX.length - 1; k >= 0; k--){
+    WHACK_FX[k].t++;
+    if(WHACK_FX[k].t > 40) WHACK_FX.splice(k, 1);
+  }
+}
+
+function whackTap(x, y){
+  if(Whack.done) return;
+  var c = whackCfg();
+  for(var i=0;i<Whack.holes.length;i++){
+    var r = whackHoleRect(i);
+    /* 热区比渲染大 14% —— 孩子点边缘没瞄准经常擦肩而过 */
+    if(hitRect(x, y, {x:r.x-r.w*0.07, y:r.y-r.h*0.07, w:r.w*1.14, h:r.h*1.14})){
+      var h = Whack.holes[i];
+      if(h.st === 0) return;
+      var pop = whackPop(h.t);
+      if(pop < 0.35) return;   /* 还没冒出来，不能算 */
+      if(h.st === 3) return;   /* 已被命中 */
+      if(h.isBad){
+        /* 打到坏东西：扣分 + 连击清零 + 红"-"飘字 */
+        Game.score = Math.max(0, Game.score - c.penalty);
+        Whack.combo = 0; Whack.mult = 1; Whack.bad++;
+        WHACK_FX.push({txt:'-' + c.penalty, x:x, y:y, col:'#e14a3e', t:0});
+        Audio2.bad();
+      }else{
+        /* 打到好东西：加分 + 连击涨 + 绿"+N"飘字 */
+        Whack.combo++; if(Whack.combo > Whack.best) Whack.best = Whack.combo;
+        Whack.mult = Math.min(5, 1 + Math.floor(Whack.combo / 3));
+        var earn = 10 * Whack.mult;
+        Game.score += earn;
+        Whack.hit++;
+        WHACK_FX.push({txt:'+' + earn, x:x, y:y, col:'#3a8a3a', t:0});
+        Audio2.flip();
+      }
+      h.st = 3; h.t = c.life - 18;  /* 快速缩回去，命中/失误后不再停留 */
+      return;
+    }
+  }
+}
+
+function drawWhack(){
+  drawBackdrop(Game.time * 60, 0);
+  var b = whackBoard();
+  var c = whackCfg();
+  for(var i=0;i<Whack.holes.length;i++){
+    var r = whackHoleRect(i);
+    var h = Whack.holes[i];
+    /* 土堆/草地：上半截是绿草椭圆，下半截是洞的暗色 */
+    var moundY = r.y + r.h * 0.78;
+    ctx.fillStyle = '#5b8f3a';
+    ctx.beginPath();
+    ctx.ellipse(r.x + r.w/2, moundY, r.w * 0.50, r.h * 0.18, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#44702a';
+    ctx.beginPath();
+    ctx.ellipse(r.x + r.w/2, moundY, r.w * 0.50, r.h * 0.10, 0, Math.PI, Math.PI*2);
+    ctx.fill();
+    /* 洞（暗椭圆） */
+    ctx.fillStyle = '#1a1610';
+    ctx.beginPath();
+    ctx.ellipse(r.x + r.w/2, r.y + r.h * 0.84, r.w * 0.36, r.h * 0.10, 0, 0, Math.PI*2);
+    ctx.fill();
+    /* 动物露头 —— 用 st 状态和 t 进度算 pop，画完后用 clip 让下半截藏在土里 */
+    var pop = (h.st === 0) ? 0 : whackPop(h.t);
+    if(pop > 0){
+      ctx.save();
+      /* 裁掉洞底以下的部分：动物从 y=r.y+r.h*0.78 之下都不该看见 */
+      ctx.beginPath();
+      ctx.rect(r.x - 4, r.y - 4, r.w + 8, r.h * 0.82);
+      ctx.clip();
+      var upShift = (1 - pop) * r.h * 0.55;
+      var cx = r.x + r.w/2, cy = r.y + r.h * 0.78 - r.h * 0.10 - upShift;
+      if(h.isBad){
+        /* 坏东西用 ITEM_IMG（bug / shroom），尺寸按洞高算 */
+        var kind = h.k === 0 ? 'bug' : 'shroom';
+        drawItemImg(kind, cx, cy, r.h * 0.62);
+      }else{
+        drawAnimalFace(cx, cy, r.h / 78, h.k - 1);
+      }
+      ctx.restore();
+    }
+    if(h.st === 3){
+      /* 命中/失误闪一下 ★ */
+      ctx.fillStyle = h.isBad ? 'rgba(225,74,62,.55)' : 'rgba(58,138,58,.45)';
+      ctx.beginPath();
+      ctx.arc(r.x + r.w/2, r.y + r.h/2, r.w * 0.38, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+  drawTopBar('打地鼠');
+  /* 状态行：连击 + 倍率 */
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(31,77,46,.7)';
+  ctx.font = '500 14px system-ui,sans-serif';
+  if(Whack.combo >= 3){
+    ctx.fillStyle = '#d8952a';
+    ctx.font = '500 16px system-ui,sans-serif';
+    ctx.fillText('连击 ' + Whack.combo + ' · 倍率 ×' + Whack.mult, W/2, 92);
+  }else{
+    ctx.fillText('连击 0', W/2, 92);
+  }
+  /* 倒计时 */
+  var low = Whack.timeLeft <= 10;
+  ctx.fillStyle = low ? '#d33' : 'rgba(31,77,46,.82)';
+  ctx.font = '500 ' + (low ? 22 : 19) + 'px system-ui,sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(Math.ceil(Whack.timeLeft) + ' 秒', 24, 92);
+  /* 命中飘字（命中/失误的 "+12" / "-12" 浮起） */
+  for(var k=0;k<WHACK_FX.length;k++){
+    var f = WHACK_FX[k];
+    var a = Math.max(0, 1 - f.t / 40);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = f.col;
+    ctx.font = '700 22px system-ui,sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(f.txt, f.x, f.y - f.t * 0.8);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function whackExtra(){
+  return '命中 ' + Whack.hit + (Whack.bad > 0 ? ' · 误碰 ' + Whack.bad : '') +
+         (Whack.best > 1 ? ' · 最高连击 ' + Whack.best : '');
+}
+
+/* ---------- 注册到 GAMES ----------
+   p3 的注册表 (p3.html) 在 GAMES 里只识别 acorn/memory；新游戏走它自己的
+   g-*.html 片段，p4 启动时按 id 查 start/update/draw/tap/banner 挂上。
+   所以这里也照 g-spot 的方式，往 window.__fsmExtras 挂上内部对象。 */
+(function(){
+  for(var i=0;i<GAMES.length;i++){
+    if(GAMES[i].id !== 'whack') continue;
+    GAMES[i].start  = startWhack;
+    GAMES[i].update = updateWhack;
+    GAMES[i].draw   = drawWhack;
+    GAMES[i].tap    = whackTap;
+    GAMES[i].banner = '点冒头的小动物得分，打到毛毛虫和毒蘑菇扣分';
+  }
+  window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
+    Whack:Whack, whackCfg:whackCfg, whackBoard:whackBoard, WHACK_CFG:WHACK_CFG,
+    WHACK_FX:WHACK_FX, whackHoleRect:whackHoleRect
+  });
+})();

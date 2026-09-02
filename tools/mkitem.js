@@ -63,6 +63,35 @@ async function buildSpotBg(skyFile, grassFile, outName){
   return buf.length;
 }
 
+/* ---------------- 拼图图：方形裁剪 + 去水印 + JPEG ----------------
+ * 拼图需要 1:1 方形图，AI 出图是 1024×1024，水印在右下角 ~12%×12%。
+ * 居中裁 870×870（去掉上下 154 像素和两侧各 77 像素），
+ * 既能把水印（右下 884..1024）整个切掉，又尽量保留场景主体。
+ * 边裁掉 15% 是有意的：场景图四边多是叶子和花这种装饰区，
+ * 拼图切片后每块画面已经够密，边缘损失不会被注意到。
+ * 输出 512×512 JPEG：拼图板最大 380 CSS px，4×4 每块 95 px，
+ * 512 切成 128 px/块、再缩到 95 px，1.35 倍降采样比 AI 原图放大更干净。 */
+const PUZ_W = 512;
+const PUZ_SIDE = 870;
+async function buildPuzzlePic(srcFile, outName){
+  const m = await sharp(srcFile).metadata();
+  if (m.width < PUZ_SIDE + 100 || m.height < PUZ_SIDE + 100) {
+    throw new Error(`${srcFile} 至少需要 ${PUZ_SIDE + 100}x${PUZ_SIDE + 100}，实际 ${m.width}x${m.height}`);
+  }
+  const ox = Math.floor((m.width - PUZ_SIDE) / 2);
+  const buf = await sharp(srcFile)
+    .extract({ left: ox, top: 0, width: PUZ_SIDE, height: PUZ_SIDE })
+    .resize(PUZ_W, PUZ_W, { kernel: 'lanczos3' })
+    .jpeg({ quality: 82, mozjpeg: true })
+    .toBuffer();
+  const b64 = buf.toString('base64');
+  fs.writeFileSync(path.join(ROOT, 'src', outName + '.b64.txt'), b64);
+  fs.mkdirSync(path.join(RAW, 'out'), { recursive: true });
+  fs.writeFileSync(path.join(RAW, 'out', outName + '.jpg'), buf);
+  console.log(`  ${outName}: ${PUZ_W}x${PUZ_W} jpg=${(buf.length / 1024).toFixed(1)}KB b64=${(b64.length / 1024).toFixed(1)}KB（裁 ${ox},0 ${PUZ_SIDE}x${PUZ_SIDE}）`);
+  return buf.length;
+}
+
 /* RGB 三通道欧氏距离。
    这里踩过坑：早期写成两参数版 sqrt((a-c)^2+(b-d)^2)，调用却传了 6 个分量，
    实际算的是 (R-B)^2 + (G-bgR)^2 —— 把蓝通道当成对比的红通道。
@@ -300,6 +329,13 @@ async function strip(srcPath, outName) {
     path.join(RAW, 'Children_s_picture_book_illust_2026-09-01T17-18-14.png'),  /* 天空 */
     path.join(RAW, 'Children_s_picture_book_illust_2026-09-01T17-18-15.png'),  /* 草地 */
     'spotbg');
+
+  /* g-puzzle 拼图：3 张方形场景图（每局随机抽一张作原图）。
+     顺序无所谓，g-puzzle 用 round % 3 轮转；三张一起出，素材缺一张就会
+     整局黑屏，所以 src 里不存在就抛错不静默。 */
+  total += await buildPuzzlePic(path.join(RAW, 'puz-classroom.png'), 'puz0');
+  total += await buildPuzzlePic(path.join(RAW, 'puz-picnic.png'),    'puz1');
+  total += await buildPuzzlePic(path.join(RAW, 'puz-sports.png'),    'puz2');
 
   /* 找不同 8 类的尺寸与基准色相 —— 抄进 src/g-spot.html 的 SPOT_ART */
   const keys = Object.keys(meta).filter(k => k.indexOf('sp_') === 0);

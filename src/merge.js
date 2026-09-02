@@ -51,7 +51,7 @@ for (const f of ASSET_FILES) {
 }
 
 /* 拼接顺序。p4 必须最后（含 IIFE 收尾 + 关闭标签）。 */
-const PARTS = ['p1', 'p2', 'p3', 'g-spot', 'p4'];
+const PARTS = ['p1', 'p2', 'p3', 'g-spot', 'g-whack', 'g-puzzle', 'p4'];
 
 const parts = PARTS.map(function (n) {
   const f = path.join(SRC, n + '.html');
