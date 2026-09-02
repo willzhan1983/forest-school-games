@@ -3,7 +3,7 @@
  * 规则复刻自 src/g-whack.html（easy/normal/hard 三档 × 三档玩家水平）。
  *
  * 关键常量（与源码逐行对过）：
- *   弹出节奏：每 gap ~gap*0.3 帧一个（easy 52 / normal 36 / hard 26）
+ *   弹出节奏：每 spawn ~spawn*0.3 帧一个（easy 52 / normal 36 / hard 26）
  *   生命时长：life 帧（easy 100 / normal 78 / hard 60）—— 含上升+维持+下降
  *   可点窗口：pop ≥ 0.35 ≈ 帧 3..30（~28 帧），即生命的前 28/60 ~ 47%
  *   同时露出数：≤ maxUp（easy 2 / normal 3 / hard 4）
@@ -31,10 +31,13 @@ const fs = require('fs');
 const path = require('path');
 
 const TRIALS = 400;
+/* 与 src/g-whack.html 的 WHACK_CFG 保持同步。
+   洞阵只影响单洞大小（可点性），不影响出怪节奏，
+   所以模拟只用横屏的 cols/rows —— 洞数同样是 6/9/12。 */
 const WHACK_CFG = {
-  easy:   { cols:3, rows:2, life:100, gap:52, bad:0.14, maxUp:2, time:45, penalty:8  },
-  normal: { cols:3, rows:3, life:78,  gap:36, bad:0.24, maxUp:3, time:45, penalty:12 },
-  hard:   { cols:4, rows:3, life:60,  gap:26, bad:0.34, maxUp:4, time:45, penalty:16 }
+  easy:   { cols:3, rows:2, life:100, spawn:52, pad:34, maxHole:150, bad:0.14, maxUp:2, time:45, penalty:8  },
+  normal: { cols:3, rows:3, life:78,  spawn:36, pad:34, maxHole:128, bad:0.24, maxUp:3, time:45, penalty:12 },
+  hard:   { cols:4, rows:3, life:60,  spawn:26, pad:34, maxHole:96,  bad:0.34, maxUp:4, time:45, penalty:16 }
 };
 const SKILLS = [
   { name:'完美', tapInt:5,  smart:true,  badAccident:0.00 },
@@ -81,7 +84,7 @@ function simulateOne(skill, diff, seed){
           h.st = 1; h.t = 0;
         }
       }
-      spawnT = c.gap + Math.floor(rnd() * (c.gap * 0.3));
+      spawnT = c.spawn + Math.floor(rnd() * (c.spawn * 0.3));
     }
     /* 玩家尝试点击 */
     if(tapCD <= 0){

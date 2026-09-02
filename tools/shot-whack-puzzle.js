@@ -83,6 +83,51 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms));
   await wait(120);
   await page.screenshot({ path: path.join(OUT, 'WP3-whack-portrait.png') });
 
+  /* WP9 横屏打地鼠 hard（4×3 = 12 洞）
+     洞阵改为按朝向选：横屏横向排、竖屏纵向排。这里看横排 12 洞单洞够不够大。 */
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 2 });
+  await wait(700);
+  const w9 = await page.evaluate(() => {
+    const f = window.__fsm;
+    f.Game.state = 'menu'; f.selectGame('whack'); f.selectDiff('hard'); f.startCurrent();
+    const Wk = f.Whack;
+    Wk.spawnT = 1e9; f.Game.banner = 0; f.Game.score = 410;
+    Wk.combo = 8; Wk.best = 11; Wk.mult = 3; Wk.hit = 21; Wk.bad = 2; Wk.timeLeft = 18;
+    const set = (i, o) => Object.assign(Wk.holes[i], o);
+    set(1,  { st: 2, t: 12, isBad: false, k: 4 });
+    set(4,  { st: 2, t: 12, isBad: true,  k: 0 });   /* 毛毛虫 */
+    set(6,  { st: 1, t: 5,  isBad: false, k: 8 });
+    set(9,  { st: 2, t: 14, isBad: true,  k: 1 });   /* 毒蘑菇 */
+    set(11, { st: 2, t: 12, isBad: false, k: 6 });
+    const b = f.whackBoard();
+    return { n: Wk.holes.length, hole: b.hole,
+             board: { w: Math.round(b.w), h: Math.round(b.h), x: Math.round(b.x), y: Math.round(b.y) } };
+  });
+  await wait(400);
+  await page.screenshot({ path: path.join(OUT, 'WP9-whack-hard-landscape.png') });
+
+  /* WP10 竖屏打地鼠 hard（3×4 = 12 洞）
+     竖屏窄而高，4 列会把单洞挤小，所以竖屏改成 3 列 4 行 —— 洞数还是 12。 */
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
+  await wait(700);
+  const w10 = await page.evaluate(() => {
+    const f = window.__fsm;
+    f.Game.state = 'menu'; f.selectGame('whack'); f.selectDiff('hard'); f.startCurrent();
+    const Wk = f.Whack;
+    Wk.spawnT = 1e9; f.Game.banner = 0; f.Game.score = 410;
+    Wk.combo = 8; Wk.best = 11; Wk.mult = 3; Wk.hit = 21; Wk.bad = 2; Wk.timeLeft = 18;
+    const set = (i, o) => Object.assign(Wk.holes[i], o);
+    set(0,  { st: 2, t: 12, isBad: false, k: 9 });
+    set(4,  { st: 2, t: 12, isBad: true,  k: 1 });    /* 毒蘑菇 */
+    set(7,  { st: 1, t: 5,  isBad: false, k: 3 });
+    set(11, { st: 2, t: 14, isBad: false, k: 7 });
+    const b = f.whackBoard();
+    return { n: Wk.holes.length, hole: b.hole,
+             board: { w: Math.round(b.w), h: Math.round(b.h), x: Math.round(b.x), y: Math.round(b.y) } };
+  });
+  await wait(400);
+  await page.screenshot({ path: path.join(OUT, 'WP10-whack-hard-portrait.png') });
+
   /* WP4 横屏拼图 4×4 + 选中一格 */
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 2 });
   await wait(700);
@@ -120,6 +165,8 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms));
   await page.screenshot({ path: path.join(OUT, 'WP6-menu-portrait.png') });
 
   console.log('WP2 打地鼠几何', JSON.stringify(w2));
+  console.log('WP9 打地鼠 hard 横屏', JSON.stringify(w9));
+  console.log('WP10 打地鼠 hard 竖屏', JSON.stringify(w10));
   console.log('WP4 拼图几何', JSON.stringify(p4));
   console.log('WP6 竖屏菜单', JSON.stringify(m6));
   console.log('运行时错误', errs.length, errs.slice(0, 3).join(' | '));
