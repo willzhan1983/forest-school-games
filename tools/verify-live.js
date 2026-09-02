@@ -51,24 +51,34 @@ function rec(id, name, pass, detail) {
      window 上，没法直接枚举 —— 改成把线上 HTML 抓回来，抠出里面的 base64
      逐个解码。这样验的是「用户真正拿到的那个文件」，SW 返回缓存也算进来。
      base64 在构建环节被截断的话，本地测试看不出来，只有这一步能抓到。 */
+  /* 两个坑都改掉了：
+     1) list.length < 12 的上限是只有 5 张素材时写的，现在一共 18 张，
+        不提上限就只能验到前 12 张，后加的动物图线上坏了也发现不了
+     2) 正则只认 png，找不同的背景图是 JPEG，整张被漏掉 —— 改成整条
+        data URI 一起抓，mime 跟着走，不会把 JPEG 当 png 解不出来。 */
   const imgs = await page.evaluate(async () => {
     const html = await (await fetch(location.href)).text();
-    const re = /data:image\/png;base64,([A-Za-z0-9+/=]{200,})/g;
+    const re = /data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]{200,}/g;
     const list = []; let m;
-    while ((m = re.exec(html)) !== null && list.length < 12) {
+    while ((m = re.exec(html)) !== null && list.length < 40) {
       const d = await new Promise(r => {
         const im = new Image();
         im.onload = () => r({ w: im.naturalWidth, h: im.naturalHeight });
         im.onerror = () => r({ w: 0, h: 0 });
-        im.src = 'data:image/png;base64,' + m[1];
+        im.src = m[0];
       });
       list.push(d);
     }
     return list;
   });
-  const imgsOk = imgs.length >= 5 && imgs.every(d => d.w > 0 && d.h > 0);
-  rec('V2', '五张素材（2 立绘 + 3 道具）线上完整可解码', imgsOk,
-    `共 ${imgs.length} 张：` + imgs.map(d => d.w > 0 ? `${d.w}×${d.h}` : 'DECODE-FAIL').join(' '));
+  const bigOnes = imgs.filter(d => d.w > 300);                      /* 场景背景 640×560 */
+  const chars = imgs.filter(d => d.w >= 150 && d.w <= 300 && d.h >= 150);
+  const items = imgs.filter(d => d.h >= 110 && d.h <= 130 && d.w > 50 && d.w < 150);
+  const imgsOk = imgs.every(d => d.w > 0 && d.h > 0) &&
+    chars.length >= 2 && items.length >= 15 && bigOnes.length >= 1;
+  rec('V2', '全部素材（2 立绘 + 15 道具/动物 + 1 背景）线上完整可解码', imgsOk,
+    `共 ${imgs.length} 张（立绘 ${chars.length} / 道具动物 ${items.length} / 背景 ${bigOnes.length}）：` +
+    imgs.map(d => d.w > 0 ? `${d.w}×${d.h}` : 'DECODE-FAIL').join(' '));
 
   /* V3 掉落物尺寸。写死过 34，后来按画布短边改成 48。 */
   const szLand = await page.evaluate(() => ({ s: window.__fsm.itemSize(), W: window.__fsm.W, H: window.__fsm.H }));
@@ -192,6 +202,63 @@ function rec(id, name, pass, detail) {
   rec('V9', '菜单能开局（翻牌 4×4 = 16 张）',
     flow.state === 'play' && flow.id === 'memory' && flow.n === 16,
     `state=${flow.state} game=${flow.id} cards=${flow.n}`);
+
+  /* V11 翻牌的 12 张动物位图线上真的画出来了。
+     只查「图有没有解码」是不够的 —— 解码成功但代码没画（或索引错位）
+     照样是矢量脸，状态位却全绿。所以直接采翻开卡片的像素：
+     矢量脸是几块纯色拼的（色彩数 ~12），AI 位图有毛发渐变和描边（~104），
+     差一个量级，一眼分得出来。 */
+  const memArt = await page.evaluate(async () => {
+    const f = window.__fsm;
+    f.Game.state = 'menu'; f.selectGame('memory'); f.selectDiff('g43'); f.startCurrent();
+    await new Promise(r => setTimeout(r, 300));
+    f.Mem.cards[0].k = 0;      /* 白猫：浅色主体，色彩数偏低，最保守的用例 */
+    f.Mem.cards[0].open = true; f.Mem.first = -1;
+    await new Promise(r => setTimeout(r, 1200));
+    const r = f.memRect(0);
+    const cv = document.getElementById('game');
+    const sx = cv.width / 960, sy = cv.height / 540;
+    const d = cv.getContext('2d').getImageData(
+      Math.round((r.x + 20) * sx), Math.round((r.y + 20) * sy),
+      Math.round((r.w - 40) * sx), Math.round((r.h - 40) * sy)).data;
+    let n = 0; const uniq = new Set();
+    for (let i = 0; i < d.length; i += 4) {
+      n++;
+      if (n % 7 === 0) uniq.add((d[i] >> 4) + ',' + (d[i + 1] >> 4) + ',' + (d[i + 2] >> 4));
+    }
+    return {
+      colors: uniq.size,
+      decoded: f.ANIMAL_IMG.filter(function (im) { return im.naturalWidth > 0; }).length
+    };
+  });
+  rec('V11', '翻牌 12 张动物位图线上解码且真画在卡片上',
+    memArt.decoded === 12 && memArt.colors >= 40,
+    `解码 ${memArt.decoded}/12 张，卡片色彩数 ${memArt.colors}（矢量兜底约 12，阈值 ≥40）`);
+
+  /* V12 找不同面板背景线上生效。同样不查状态查像素：
+     画面上部必须是天空（蓝多于红），下部必须是草地（绿多于红）。
+     背景图没加载时走的是纯色渐变，两个色带关系一样成立，
+     所以还要确认背景图本身解码出来了（naturalWidth > 0）。 */
+  const spotArt = await page.evaluate(async () => {
+    const f = window.__fsm;
+    f.Game.state = 'menu'; f.selectGame('spot'); f.selectDiff('easy'); f.startCurrent();
+    await new Promise(r => setTimeout(r, 500));
+    const p = f.spotPanel(0);
+    const cv = document.getElementById('game');
+    const sx = cv.width / 960, sy = cv.height / 540;
+    const c = cv.getContext('2d');
+    const band = (y, h) => {
+      const d = c.getImageData(Math.round((p.x + 8) * sx), Math.round((p.y + y) * sy),
+        Math.round((p.w - 16) * sx), Math.max(1, Math.round(h * sy))).data;
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; }
+      return [Math.round(r / n), Math.round(g / n), Math.round(b / n)];
+    };
+    return { up: band(8, p.h * 0.35), dn: band(p.h * 0.62, p.h * 0.34), bgW: f.SPOT_BG_IMG.naturalWidth };
+  });
+  rec('V12', '找不同面板背景线上生效（上蓝天下草地）',
+    spotArt.bgW > 0 && spotArt.up[2] > spotArt.up[0] + 4 && spotArt.dn[1] > spotArt.dn[0] + 4,
+    `背景图宽 ${spotArt.bgW}px 上部 rgb(${spotArt.up.join(',')}) 下部 rgb(${spotArt.dn.join(',')})`);
 
   /* V10 全程结束仍零错误（跑完上面这些操作后复检） */
   rec('V10', '复验全程零运行时错误', errs.length === 0 && warns.length === 0,
