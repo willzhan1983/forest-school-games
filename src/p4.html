@@ -183,6 +183,8 @@ window.__fsm = {
   get H(){ return H; },
   diffName:diffName, optsIndex:optsIndex,
   cardRect:cardRect, diffRect:diffRect, musicRect:musicRect, linkRect:linkRect,
+  /* 布局量本身也导出：菜单几何是算出来的，测试要能校验「5 个游戏时按钮还在画面内」 */
+  cardMetrics:cardMetrics, diffMetrics:diffMetrics, optsLabel:optsLabel,
   againRect:againRect, homeRect:homeRect, memRect:memRect, backRect:backRect,
   openRunner:openRunner,
   _step:stepMap

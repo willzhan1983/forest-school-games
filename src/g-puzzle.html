@@ -1,0 +1,301 @@
+
+/* ============================================================
+ * 8.6 游戏三：拼图（交换式）
+ * ------------------------------------------------------------
+ * 点两格换位的拼图。比经典 15-puzzle（华容道）友好：
+ *  - 始终可解（任意偶数次交换都可解，经典滑块要先判定奇偶）
+ *  - 不会"卡死"留一个空位不能动
+ *  - 触屏上点两下比滑一格更精准
+ *
+ * 计分公式 = 基础分 - (实际步数 - 最小交换次数) × 罚分
+ * 最小交换次数 = n - cycleCount（每个环 n-1 步），shuffle 时算出来。
+ * 完美玩法的分数恰好等于 base —— 没有"满分开天窗"，分数诚实。
+ *
+ * 不再有"隐形时间罚"：PR 之前的翻牌用了 base - 时间罚 - 翻牌罚，
+ * 完美玩法照样被扣 36 分。这条规则是 PR 之后接体检报告里立的
+ * 规矩 ——「只罚看得见的」。这里只罚步数（屏幕上能数得清），
+ * 用时作为结算页 extra 信息展示，不扣分。
+ * ========================================================== */
+var PUZZLES = [
+  /* base 跟牌数同步抬，4×4 多一倍就多给 600，让「完美满分」在四档间
+     都有意义（不至于大棋盘反而比小棋盘满分低） */
+  { id:'p33', name:'3 × 3', cols:3, rows:3, base:900,  pen:14, color:'#4caf6d', dark:'#2f7a46' },
+  { id:'p43', name:'4 × 3', cols:4, rows:3, base:1200, pen:12, color:'#4a90d9', dark:'#2b6bb0' },
+  { id:'p44', name:'4 × 4', cols:4, rows:4, base:1500, pen:10, color:'#9b6bd6', dark:'#7644ad' }
+];
+function puzCfg(){
+  for(var i=0;i<PUZZLES.length;i++) if(PUZZLES[i].id===Game.diff) return PUZZLES[i];
+  return PUZZLES[0];
+}
+
+/* 3 张图，每局 round 轮转，2+2+1 分布（保证 3 张图都被玩到过）。
+   索引 = round % 3，外部 +1 让第三张比前两张多玩一次。 */
+var PUZ_SRC = [
+  'data:image/jpeg;base64,__PUZ0_B64__',
+  'data:image/jpeg;base64,__PUZ1_B64__',
+  'data:image/jpeg;base64,__PUZ2_B64__'
+];
+var Puz = { imgs:[], pick:0, ready:false, n:0, cols:0, rows:0,
+            order:[], sel:-1, moves:0, minSwaps:0, round:0, solvedT:0, done:false };
+
+function loadPuzImgs(){
+  for(var i=0;i<PUZ_SRC.length;i++){
+    var im = new Image();
+    (function(idx, img){
+      img.onload = function(){ Puz.imgs[idx] = img; };
+      img.onerror = function(){ Puz.imgs[idx] = null; };
+      img.src = PUZ_SRC[idx];
+    })(i, im);
+    Puz.imgs.push(im);
+  }
+}
+loadPuzImgs();
+
+/* 找出 n 个元素的排列中需要多少次两两交换才能回到 identity。
+   思路：把排列拆成 cycle，每个长度 L 的环需要 L-1 次交换。
+   关键测试用例：identity (全 0 cycle) = 0；完全逆转 = n-1。 */
+function minSwapsOf(perm){
+  var seen = new Array(perm.length), sw = 0;
+  for(var i=0;i<perm.length;i++){
+    if(seen[i] || perm[i] === i) { seen[i] = true; continue; }
+    var j = i, cyc = 0;
+    while(!seen[j]){ seen[j] = true; j = perm[j]; cyc++; }
+    sw += cyc - 1;
+  }
+  return sw;
+}
+
+/* 洗一副牌：随机排列，但保证 minSwaps >= 4（太小没意思）、
+   最多重洗 20 次、最后实在达不到 4 就接受当前。
+   4 这个门槛对小棋盘（3×3 = 9 块）来说已经够"乱"了，
+   大棋盘 4×4 = 16 块平均值 ~15，会远超过。 */
+function shuffleOrder(n){
+  for(var t=0;t<20;t++){
+    var a = []; for(var i=0;i<n;i++) a[i] = i;
+    for(var k=n-1;k>0;k--){
+      var j = Math.floor(Math.random() * (k + 1));
+      var tmp = a[k]; a[k] = a[j]; a[j] = tmp;
+    }
+    var isId = true;
+    for(var p=0;p<n;p++) if(a[p] !== p) { isId = false; break; }
+    if(isId) continue;
+    var ms = minSwapsOf(a);
+    if(ms >= 4) return a;
+  }
+  return null;
+}
+
+function startPuzzle(){
+  var c = puzCfg();
+  Puz.pick = Puz.round % PUZ_SRC.length;
+  Puz.round++;
+  Puz.cols = c.cols; Puz.rows = c.rows; Puz.n = c.cols * c.rows;
+  Puz.moves = 0; Puz.sel = -1; Puz.solvedT = 0; Puz.done = false;
+  Puz.ready = !!(Puz.imgs[Puz.pick] && Puz.imgs[Puz.pick].complete &&
+                 Puz.imgs[Puz.pick].naturalWidth > 0);
+  if(Puz.ready){
+    Puz.order = shuffleOrder(Puz.n);
+    Puz.minSwaps = minSwapsOf(Puz.order);
+  }else{
+    Puz.order = []; Puz.minSwaps = 0;
+  }
+  Game.score = 0; Game.banner = 90;
+}
+
+function puzImg(){
+  return Puz.imgs[Puz.pick] || null;
+}
+
+/* 棋盘几何：landscape 把缩略图放右侧，portrait 放上方。
+   缩略图大小 = side * 0.28（保底 100px，撑顶 130px），
+   大到能看清每块的颜色布局，但不能大到抢了主棋盘的视觉重心。 */
+function puzLayout(){
+  var c = puzCfg();
+  if(VIEW.portrait){
+    var side = Math.min(W - 60, 440);
+    var bx = (W - side) / 2, by = 116;
+    var ts = Math.min(side * 0.32, 130);
+    ts = Math.max(ts, 96);
+    return { side:side, bx:bx, by:by, tx:(W - ts) / 2, ty:by + side + 18, ts:ts };
+  }
+  var side = Math.min(H - 150, 380);
+  side = Math.max(side, 280);
+  var ts = Math.min(side * 0.32, 130);
+  ts = Math.max(ts, 96);
+  var gap = 22;
+  var gw = side + gap + ts;
+  var bx = (W - gw) / 2, by = 110;
+  return { side:side, bx:bx, by:by, tx:bx + side + gap, ty:by, ts:ts };
+}
+function puzCell(i){
+  var L = puzLayout();
+  return { x:L.bx + (i % Puz.cols) * (L.side / Puz.cols),
+           y:L.by + Math.floor(i / Puz.cols) * (L.side / Puz.rows),
+           w:L.side / Puz.cols, h:L.side / Puz.rows };
+}
+
+/* srcX/srcY/W/H：原图坐标系。puzImg 总是 512×512，所以 3×3 每块 ~170，
+   4×4 每块 128 —— board 渲染时再缩到 puzCell.w,h。 */
+function puzSrc(i){
+  var srcCell = 512 / Puz.cols;  /* 假设宽=高=512 */
+  return { x:(i % Puz.cols) * srcCell, y:Math.floor(i / Puz.cols) * srcCell,
+           w:srcCell, h:srcCell };
+}
+
+function drawPuzzle(){
+  drawBackdrop(Game.time * 60, 0);
+  var L = puzLayout(), c = puzCfg();
+  /* 缩略图（原图参考） */
+  var img = puzImg();
+  if(img && img.complete && img.naturalWidth > 0){
+    ctx.save();
+    /* 缩略图也加圆角和细边，跟主棋盘视觉一致 */
+    roundRect(L.tx, L.ty, L.ts, L.ts, 8); ctx.clip();
+    ctx.drawImage(img, L.tx, L.ty, L.ts, L.ts);
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(60,80,70,.35)'; ctx.lineWidth = 1.5;
+    roundRect(L.tx, L.ty, L.ts, L.ts, 8); ctx.stroke();
+    /* 「参考图」标签 */
+    ctx.fillStyle = 'rgba(31,77,46,.65)';
+    ctx.font = '500 12px system-ui,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText('参考图', L.tx + L.ts/2, L.ty + L.ts + 4);
+  }else{
+    /* 图没解码完，缩略图位置显示占位 + 加载提示 */
+    ctx.fillStyle = 'rgba(0,0,0,.06)';
+    roundRect(L.tx, L.ty, L.ts, L.ts, 8); ctx.fill();
+    ctx.fillStyle = 'rgba(31,77,46,.55)';
+    ctx.font = '500 12px system-ui,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('准备中…', L.tx + L.ts/2, L.ty + L.ts/2);
+  }
+
+  /* 主棋盘底框 */
+  ctx.fillStyle = 'rgba(255,255,255,.55)';
+  roundRect(L.bx - 3, L.by - 3, L.side + 6, L.side + 6, 12); ctx.fill();
+  ctx.strokeStyle = 'rgba(60,80,70,.3)'; ctx.lineWidth = 1.5;
+  roundRect(L.bx - 3, L.by - 3, L.side + 6, L.side + 6, 12); ctx.stroke();
+
+  if(!Puz.ready){
+    ctx.fillStyle = 'rgba(31,77,46,.7)';
+    ctx.font = '500 18px system-ui,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('正在准备图…', L.bx + L.side/2, L.by + L.side/2);
+    drawTopBar('拼图');
+    return;
+  }
+  if(!Puz.order || !Puz.order.length){
+    /* 图刚加载好但还没洗牌 —— 罕见，短暂窗口内会闪一下。保护一下。 */
+    Puz.order = shuffleOrder(Puz.n);
+    Puz.minSwaps = minSwapsOf(Puz.order);
+  }
+  /* 画每块：用 drawImage 把原图裁切到原图对应区域再缩到目标格。
+     这是拼图最关键的一行 —— 位置 / 缩放都按 Puz.order 索引取。 */
+  for(var i=0;i<Puz.n;i++){
+    var cell = puzCell(i);
+    var orig = Puz.order[i];
+    var src = puzSrc(orig);
+    ctx.save();
+    roundRect(cell.x + 1.5, cell.y + 1.5, cell.w - 3, cell.h - 3, 4); ctx.clip();
+    ctx.drawImage(img, src.x, src.y, src.w, src.h,
+                  cell.x, cell.y, cell.w, cell.h);
+    ctx.restore();
+    /* 块分割线（暗一档白）—— 让孩子能看清每块边界 */
+    ctx.strokeStyle = 'rgba(40,30,20,.18)'; ctx.lineWidth = 1;
+    ctx.strokeRect(cell.x + 0.5, cell.y + 0.5, cell.w - 1, cell.h - 1);
+    /* 角标数字：1..n，左上角小字 + 浅底，给孩子"我应该把它放回哪"的锚点。
+       大人玩会觉得多余但 10 岁孩子很需要。 */
+    var num = orig + 1;
+    ctx.font = '600 ' + Math.max(10, Math.round(cell.w * 0.13)) + 'px system-ui,sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    var tagW = ctx.measureText(num).width + 6;
+    var tagH = Math.max(14, cell.w * 0.18);
+    ctx.fillStyle = 'rgba(255,255,255,.78)';
+    roundRect(cell.x + 4, cell.y + 4, tagW, tagH, 4); ctx.fill();
+    ctx.fillStyle = '#2f2a26';
+    ctx.fillText(num, cell.x + 7, cell.y + 5);
+  }
+  /* 选中高亮：金色描边 + 轻微抬起阴影 */
+  if(Puz.sel >= 0 && !Puz.done){
+    var sc = puzCell(Puz.sel);
+    ctx.shadowColor = 'rgba(216,149,42,.6)'; ctx.shadowBlur = 12;
+    ctx.strokeStyle = '#d8952a'; ctx.lineWidth = 3.5;
+    ctx.strokeRect(sc.x + 2, sc.y + 2, sc.w - 4, sc.h - 4);
+    ctx.shadowBlur = 0;
+  }
+  drawTopBar('拼图');
+  /* 步数 + 最小步数参考 */
+  ctx.fillStyle = 'rgba(31,77,46,.7)';
+  ctx.font = '500 14px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  var hint = '步数 ' + Puz.moves + '  ·  最少 ' + Puz.minSwaps;
+  ctx.fillText(hint, W/2, 92);
+}
+
+function updatePuzzle(dt){
+  if(Puz.done) return;
+  /* 图异步加载完成时补洗牌（startPuzzle 拿不到 ready=true 的情况） */
+  if(!Puz.ready && Puz.imgs[Puz.pick] && Puz.imgs[Puz.pick].complete &&
+     Puz.imgs[Puz.pick].naturalWidth > 0){
+    Puz.ready = true;
+    Puz.order = shuffleOrder(Puz.n);
+    Puz.minSwaps = minSwapsOf(Puz.order);
+  }
+  if(Puz.solvedT > 0){
+    /* solvedT 是帧数（36 帧 ≈ 0.6s 的"解出后庆祝停留"），不是秒。
+       之前误写 `dt / 60` 把 36 帧当成 36 秒，孩子解出后要等半分钟才进结算 —— 实测发现。 */
+    Puz.solvedT -= dt;
+    if(Puz.solvedT <= 0 && !Puz.done){
+      Puz.done = true;
+      var c = puzCfg();
+      var penalty = Math.max(0, Puz.moves - Puz.minSwaps) * c.pen;
+      Game.score = Math.max(50, c.base - penalty);
+      var used = Math.round((60 - (c.time || 0)) /* unused */);
+      endGame(Game.score, '用了 ' + Puz.moves + ' 步 · 最少 ' + Puz.minSwaps + ' 步' +
+              (Puz.moves === Puz.minSwaps ? ' · 完美' : ''));
+    }
+  }
+}
+
+function puzzleTap(x, y){
+  if(Puz.done || !Puz.ready) return;
+  for(var i=0;i<Puz.n;i++){
+    var c = puzCell(i);
+    if(hitRect(x, y, c)){
+      if(Puz.sel === -1){
+        Puz.sel = i; Audio2.click();
+      }else if(Puz.sel === i){
+        Puz.sel = -1; Audio2.click();
+      }else{
+        var a = Puz.sel, b = i;
+        var t = Puz.order[a]; Puz.order[a] = Puz.order[b]; Puz.order[b] = t;
+        Puz.sel = -1;
+        Puz.moves++;
+        Audio2.flip();
+        /* 检查是否解出 */
+        var solved = true;
+        for(var k=0;k<Puz.n;k++) if(Puz.order[k] !== k){ solved = false; break; }
+        if(solved){ Puz.solvedT = 36; Audio2.win(); }
+      }
+      return;
+    }
+  }
+  /* 点到棋盘外（缩略图区）：取消选择 */
+  if(Puz.sel >= 0) Puz.sel = -1;
+}
+
+/* ---------- 注册到 GAMES ---------- */
+(function(){
+  for(var i=0;i<GAMES.length;i++){
+    if(GAMES[i].id !== 'puzzle') continue;
+    GAMES[i].start  = startPuzzle;
+    GAMES[i].update = updatePuzzle;
+    GAMES[i].draw   = drawPuzzle;
+    GAMES[i].tap    = puzzleTap;
+    GAMES[i].banner = '点第一块，再点第二块互换；角标数字告诉你它属于哪里';
+  }
+  window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
+    Puz:Puz, puzCfg:puzCfg, puzLayout:puzLayout, puzCell:puzCell, puzImg:puzImg,
+    PUZZLES:PUZZLES, minSwapsOf:minSwapsOf
+  });
+})();
