@@ -17,37 +17,63 @@
  *
  * 时限统一 45 秒（接橡果体检后定的"课间一局"基线）。
  * ========================================================== */
+/* 三个旋钮各管一件事，不要复用：
+ *   spawn   = 生成间隔（帧）—— 时间密度
+ *   pad     = 洞之间的空隙（像素）—— 空间密度
+ *   maxHole = 单洞上限（像素）—— 保证难度越高洞越小
+ *
+ * 之前 gap 一个字段既当生成间隔又当洞间距，结果难度升高时
+ * "生成更快"和"洞间距变小"两个效果打起来：间距变小 → 约束放松 →
+ * hole 反而被算得更大。实测横屏 easy 93.8px -> normal 57.7px -> hard 62.5px，
+ * hard 比 normal 还好点，难度梯度被自己吃掉了。
+ *
+ * colsP/rowsP 是竖屏专用洞阵：竖屏窄而高，列数一多单洞就被挤小。
+ * 横屏横向排（4x3），竖屏纵向排（3x4），洞数一样是 12，但单洞大得多。
+ *
+ * pad 必须三档一致 —— 它就是那个坑本身。pad 随难度变小的话，
+ * 高度约束 (ah - pad*(rows-1))/rows 会跟着放松，洞又被撑大：
+ * 实测 pad 34/34/30 时横屏 hard 算出 103px，比 normal 的 100px 还大。
+ * 空间密度交给洞数（cols/rows）表达，单洞大小交给 maxHole 封顶。
+ */
 var WHACK_CFG = {
-  easy:   { cols:3, rows:2, life:100, gap:52, bad:0.14, maxUp:2, time:45, penalty:8  },
-  normal: { cols:3, rows:3, life:78,  gap:36, bad:0.24, maxUp:3, time:45, penalty:12 },
-  hard:   { cols:4, rows:3, life:60,  gap:26, bad:0.34, maxUp:4, time:45, penalty:16 }
+  easy:   { cols:3, rows:2, colsP:2, rowsP:3, life:100, spawn:52, pad:34, maxHole:150,
+            bad:0.14, maxUp:2, time:45, penalty:8  },
+  normal: { cols:3, rows:3, colsP:3, rowsP:3, life:78,  spawn:36, pad:34, maxHole:128,
+            bad:0.24, maxUp:3, time:45, penalty:12 },
+  hard:   { cols:4, rows:3, colsP:3, rowsP:4, life:60,  spawn:26, pad:34, maxHole:96,
+            bad:0.34, maxUp:4, time:45, penalty:16 }
 };
 var WHACK_FX = [];  /* 命中/失误飘字 */
 var Whack = { holes:[], spawnT:0, timeLeft:0, hit:0, miss:0, bad:0,
               combo:0, best:0, mult:1, done:false };
 
+/* 返回当前朝向生效的配置（cols/rows 已按横竖屏解析）。
+   返回副本，不改 WHACK_CFG 本身。 */
 function whackCfg(){
-  for(var i=0;i<DIFFS.length;i++) if(DIFFS[i].id===Game.diff) return WHACK_CFG[Game.diff];
-  return WHACK_CFG.easy;
+  var c = WHACK_CFG.easy;
+  for(var i=0;i<DIFFS.length;i++) if(DIFFS[i].id===Game.diff){ c = WHACK_CFG[Game.diff]; break; }
+  if(!VIEW.portrait) return c;
+  return { cols:c.colsP, rows:c.rowsP, life:c.life, spawn:c.spawn, pad:c.pad,
+           maxHole:c.maxHole, bad:c.bad, maxUp:c.maxUp, time:c.time, penalty:c.penalty };
 }
 
-/* 棋盘几何：横屏最大 ~380 高（让 top bar 和底栏留出空间），
-   竖屏 9 洞方阵让高度撑开。洞尺寸 = (短边 - 余量) / 行数，
-   保证两套画布比例下都正方。 */
+/* 棋盘几何。两个朝向共用一套算法，只是洞阵和留白不同：
+   横屏 H=540，顶条占 ~100、底部是纯留白（实测 y>430 没画任何东西），
+   所以 botY 从 110 压到 70，把省下的 40px 还给洞。 */
 function whackBoard(){
   var c = whackCfg();
   var margin = VIEW.portrait ? 40 : 36;
-  var topY = VIEW.portrait ? 130 : 108;
-  var botY = VIEW.portrait ? 110 : 110;
+  var topY = VIEW.portrait ? 130 : 100;
+  var botY = VIEW.portrait ? 110 : 70;
   var aw = W - margin * 2, ah = H - topY - botY;
-  var gap = c.gap;
-  var hole = Math.floor(Math.min((aw - gap * (c.cols - 1)) / c.cols,
-                                  (ah - gap * (c.rows - 1)) / c.rows));
+  var pad = c.pad;
+  var hole = Math.floor(Math.min((aw - pad * (c.cols - 1)) / c.cols,
+                                  (ah - pad * (c.rows - 1)) / c.rows,
+                                  c.maxHole));
   if(hole < 60) hole = 60;
-  if(hole > 150) hole = 150;
-  var bw = hole * c.cols + gap * (c.cols - 1);
-  var bh = hole * c.rows + gap * (c.rows - 1);
-  return { hole:hole, gap:gap, w:bw, h:bh,
+  var bw = hole * c.cols + pad * (c.cols - 1);
+  var bh = hole * c.rows + pad * (c.rows - 1);
+  return { hole:hole, gap:pad, w:bw, h:bh,
            x:(W - bw) / 2, y:topY + (ah - bh) / 2 - 6 };
 }
 function whackHoleRect(i){
@@ -120,7 +146,7 @@ function updateWhack(dt){
       h.st = 1; h.t = 0;
     }
     /* 生成间隔：easy 52 帧，normal 36，hard 26。dt=1 帧 = 1/60 秒。 */
-    Whack.spawnT = c.gap + Math.floor(Math.random() * (c.gap * 0.3));
+    Whack.spawnT = c.spawn + Math.floor(Math.random() * (c.spawn * 0.3));
   }
   /* 更新各洞 */
   for(var i=0;i<Whack.holes.length;i++){

@@ -846,20 +846,55 @@ async function sample(page, x, y, w, h) {
     await enterWhack(d);
     whackByDiff[d] = await page.evaluate(() => {
       const f = window.__fsm, c = f.whackCfg();
-      return { cols:c.cols, rows:c.rows, life:c.life, gap:c.gap, bad:c.bad, maxUp:c.maxUp,
-               time:c.time, penalty:c.penalty, nHoles:f.Whack.holes.length, timeLeft:f.Whack.timeLeft };
+      return { cols:c.cols, rows:c.rows, life:c.life, spawn:c.spawn, pad:c.pad,
+               maxHole:c.maxHole, bad:c.bad, maxUp:c.maxUp,
+               time:c.time, penalty:c.penalty, nHoles:f.Whack.holes.length,
+               hole:f.whackBoard().hole, timeLeft:f.Whack.timeLeft };
     });
   }
   const w = whackByDiff;
-  rec('T50', '打地鼠：卡片可点 + 三档配置生效（洞数/时长/坏东西比例）',
-    w.easy.cols === 3 && w.easy.rows === 2 && w.easy.nHoles === 6 && w.easy.life === 100 &&
-    w.normal.cols === 3 && w.normal.rows === 3 && w.normal.nHoles === 9 &&
-    w.hard.cols === 4 && w.hard.rows === 3 && w.hard.nHoles === 12 &&
+  /* 单洞必须随难度单调变小。这条就是之前漏掉的 bug：
+     gap 一个字段既当生成间隔又当洞间距，难度升高时间距变小反而把洞撑大了，
+     横屏实测 easy 93.8 -> normal 57.7 -> hard 62.5px（hard 反弹变大）。 */
+  const mono = w.easy.hole >= w.normal.hole && w.normal.hole >= w.hard.hole;
+  rec('T50', '打地鼠：卡片可点 + 三档配置生效（洞数递增 / 单洞递减）',
+    w.easy.nHoles === 6 && w.normal.nHoles === 9 && w.hard.nHoles === 12 &&
+    w.easy.life === 100 &&
     w.easy.bad === 0.14 && w.normal.bad === 0.24 && w.hard.bad === 0.34 &&
-    w.easy.gap > w.normal.gap && w.normal.gap > w.hard.gap,
-    `easy ${w.easy.cols}x${w.easy.rows}=${w.easy.nHoles}洞 life=${w.easy.life} gap=${w.easy.gap} bad=${w.easy.bad} | ` +
-    `normal ${w.normal.cols}x${w.normal.rows}=${w.normal.nHoles}洞 gap=${w.normal.gap} | ` +
-    `hard ${w.hard.cols}x${w.hard.rows}=${w.hard.nHoles}洞 gap=${w.hard.gap}`);
+    w.easy.spawn > w.normal.spawn && w.normal.spawn > w.hard.spawn &&
+    mono,
+    `easy ${w.easy.cols}x${w.easy.rows}=${w.easy.nHoles}洞 life=${w.easy.life} spawn=${w.easy.spawn} bad=${w.easy.bad} | ` +
+    `normal ${w.normal.cols}x${w.normal.rows}=${w.normal.nHoles}洞 spawn=${w.normal.spawn} | ` +
+    `hard ${w.hard.cols}x${w.hard.rows}=${w.hard.nHoles}洞 spawn=${w.hard.spawn} || ` +
+    `单洞 ${w.easy.hole}->${w.normal.hole}->${w.hard.hole}px ${mono ? '单调递减 OK' : '非单调!'}`);
+
+  /* ---- T50b 打地鼠：两个朝向下单洞都够点（物理热区 >= 60px）----
+     逻辑画布是 960x540 / 540x960，CSS 等比缩放，
+     所以要乘缩放比才是手指真正点到的尺寸。 */
+  for (const [devName, vw, vh] of [['iPhone SE 横', 667, 375], ['iPhone SE 竖', 375, 667]]) {
+    await page.setViewport({ width: vw, height: vh, deviceScaleFactor: 2 });
+    await wait(400);
+    const holesPx = {};
+    for (const d of ['easy', 'normal', 'hard']) {
+      await enterWhack(d);
+      holesPx[d] = await page.evaluate(() => {
+        const f = window.__fsm;
+        const cv = document.getElementById('game');
+        const portrait = window.innerHeight > window.innerWidth * 1.15;
+        const s = cv.getBoundingClientRect().width / (portrait ? 540 : 960);
+        return { hole: +(f.whackBoard().hole * s).toFixed(1),
+                 tap: +(f.whackBoard().hole * 1.14 * s).toFixed(1) };
+      });
+    }
+    const allOK = ['easy', 'normal', 'hard'].every(d => holesPx[d].tap >= 60);
+    const mono2 = holesPx.easy.hole >= holesPx.normal.hole && holesPx.normal.hole >= holesPx.hard.hole;
+    rec('T50b', `打地鼠 ${devName}：单洞物理尺寸够点且单调递减`,
+      allOK && mono2,
+      `热区 easy ${holesPx.easy.tap} / normal ${holesPx.normal.tap} / hard ${holesPx.hard.tap}px ` +
+      `(单洞 ${holesPx.easy.hole}->${holesPx.normal.hole}->${holesPx.hard.hole}px)`);
+  }
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await wait(400);
 
   /* ---- T51 打地鼠：命中好物加分（combo 累加、score 增加 mult*10） ----
      不等 rAF 循环找好物 —— 直接构造一个 st=2/t=12 的好物，验证命中逻辑。 */
