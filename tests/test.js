@@ -970,6 +970,54 @@ async function sample(page, x, y, w, h) {
     st54.s === 'result' && st54.timeLeft === 0 && st54.sc >= 0,
     `state=${st54.s} score=${st54.sc} timeLeft=${st54.timeLeft}`);
 
+  /* ---- T55 翻牌：小屏竖屏卡片够点（>= 44px）+ 棋盘不出界 ----
+     Mem.cw 是逻辑坐标，只看它看不出问题：竖屏逻辑画布恒为 540 宽，
+     卡片逻辑尺寸在所有手机上一样，但 375 宽的手机缩放到 0.69 倍后，
+     6×4 的单卡实测只有 41.7px，低于 44px 的可点下限。必须换算成 CSS 像素
+     再断言。maxW 从 W-120 收到 W-80 后升到 45.8px。 */
+  for (const [devName, vw, vh] of [['iPhone SE 竖', 375, 667], ['iPhone 14 竖', 390, 844]]) {
+    await page.setViewport({ width: vw, height: vh, deviceScaleFactor: 2 });
+    await wait(400);
+    const memPx = {};
+    for (const g of ['g43', 'g44', 'g54', 'g64']) {
+      await page.evaluate(gid => {
+        const f = window.__fsm;
+        f.Game.state = 'menu'; f.selectGame('memory'); f.selectDiff(gid); f.startCurrent();
+      }, g);
+      await wait(250);
+      memPx[g] = await page.evaluate(() => {
+        const f = window.__fsm, M = f.Mem;
+        const cv = document.getElementById('game');
+        const s = cv.getBoundingClientRect().width / (f.VIEW.portrait ? 540 : 960);
+        return { w:+(M.cw * s).toFixed(1), h:+(M.ch * s).toFixed(1),
+                 x0:M.x0, bottom:M.y0 + ((M.ch + 8) * M.rows - 8), H:f.H };
+      });
+    }
+    const gs = ['g43', 'g44', 'g54', 'g64'];
+    const allOK = gs.every(g => memPx[g].w >= 44 && memPx[g].h >= 44);
+    const mono = memPx.g43.w >= memPx.g44.w && memPx.g44.w > memPx.g54.w && memPx.g54.w > memPx.g64.w;
+    const inBoard = gs.every(g => memPx[g].x0 > 0 && memPx[g].bottom < memPx[g].H);
+    rec('T55', `翻牌 ${devName}：四档卡片都够点（>=44px）且棋盘不出界`,
+      allOK && mono && inBoard,
+      `卡片宽 ${memPx.g43.w} / ${memPx.g44.w} / ${memPx.g54.w} / ${memPx.g64.w}px ` +
+      `${mono ? '随档位递减 OK' : '非递减!'}  ${inBoard ? '棋盘在界内' : '棋盘出界!'}`);
+  }
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await wait(400);
+
+  /* ---- T55b 翻牌横屏：不受竖屏改动影响（W=960 时各档都撞 110 上限）---- */
+  await page.evaluate(() => {
+    const f = window.__fsm;
+    f.Game.state = 'menu'; f.selectGame('memory'); f.selectDiff('g64'); f.startCurrent();
+  });
+  await wait(300);
+  const memLand = await page.evaluate(() => ({
+    cw: window.__fsm.Mem.cw, ch: window.__fsm.Mem.ch, portrait: window.__fsm.VIEW.portrait
+  }));
+  rec('T55b', '翻牌横屏：卡片尺寸不受竖屏改动影响（cw 仍撞 110 上限）',
+    !memLand.portrait && memLand.cw === 110,
+    `cw=${memLand.cw} ch=${memLand.ch} portrait=${memLand.portrait}`);
+
   /* ================= 拼图（第五个游戏） ================= */
   const enterPuzzle = async (puzId) => {
     await page.evaluate(p => {
