@@ -1657,7 +1657,11 @@ function startMemory(){
   }
   Mem.cards = deck.map(function(k){ return { k:k, open:false, done:false, anim:0 }; });
   Mem.first = -1; Mem.flips = 0; Mem.matched = 0; Mem.lockT = 0; Mem.el = 0;
-  var maxW = W - 120;
+  /* 左右留白总量。原来 120，竖屏 6×4 的单卡只剩 60 逻辑宽 —— iPhone SE 竖屏
+     实测 41.7 CSS px，低于 44px 的可点目标下限，小孩点不准。收到 80 后单卡
+     66 逻辑宽（SE 竖屏 45.8px）刚过线。横屏不受影响：W=960 时各尺寸都撞
+     110 的上限，改这个数不会让横屏卡片变形。 */
+  var maxW = W - 80;
   /* 竖屏 H=960，纵向空间大，但 W=540 比横屏的 960 窄得多。Mem.cw 必须先按
      W 收紧（横屏是 110 上限；竖屏 4 列只 95，再 5 列就 75），Mem.ch 也按 H
      给的余量收紧。Mem.y0 在竖屏下推到 200，给顶栏（100px）+ 顶部副标（28px）
