@@ -222,8 +222,8 @@ async function sample(page, x, y, w, h) {
   await clickAt(page, ...center(cardRects[IDX_ACORN]));
   await wait(600);
   const st8 = await page.evaluate(() => ({ s: window.__fsm.Game.state, g: window.__fsm.Game.gameId, lives: window.__fsm.Acorn.lives }));
-  rec('T8', '点击卡片启动接橡果', st8.s === 'play' && st8.g === 'acorn' && st8.lives === 5,
-    `state=${st8.s} gameId=${st8.g} lives=${st8.lives}(简单档应为5)`);
+  rec('T8', '点击卡片启动接橡果', st8.s === 'play' && st8.g === 'acorn' && st8.lives === 3,
+    `state=${st8.s} gameId=${st8.g} lives=${st8.lives}(简单档应为3)`);
 
   /* ---- T9 橡果生成并下落 ---- */
   await wait(1400);
@@ -246,17 +246,42 @@ async function sample(page, x, y, w, h) {
   rec('T10', '接住橡果加分且连击累计', after10.s > before10 && after10.c >= 1,
     `score ${before10} -> ${after10.s}  combo=${after10.c}`);
 
-  /* ---- T11 漏接扣命 + 归零结算 ---- */
+  /* ---- T11 好橡果漏接：只断连击 + 不扣命 + 不进结算 ----
+     P0.1 修复：原来漏掉好橡果就扣命 + 命归零进结算，
+     「来不及」被当成失误，违反「不惩罚来不及」铁律。
+     改后只断连击 + 闪屏 + 错音作反馈，命数和游戏状态都不动。 */
   await page.evaluate(() => {
     const A = window.__fsm.Acorn;
-    A.nuts.length = 0; A.lives = 1;
-    /* y 直接放到 H+30 之外，下一帧必定判定为漏接 */
+    A.nuts.length = 0; A.combo = 3;
+    window.__fsm.Game.score = 100;
+    /* y=H+30 之外必漏，x 偏 400 让 owlX 接不到 */
     A.nuts.push({ x: A.owlX + 400, y: 600, vy: 1, kind: 'acorn', rot: 0, vr: 0, swing: 0 });
   });
   await wait(500);
-  const st11 = await page.evaluate(() => ({ s: window.__fsm.Game.state, lives: window.__fsm.Acorn.lives }));
-  rec('T11', '漏接扣命，命尽进结算页', st11.s === 'result' && st11.lives <= 0,
-    `state=${st11.s} lives=${st11.lives}`);
+  const st11 = await page.evaluate(() => ({
+    s: window.__fsm.Game.state, lives: window.__fsm.Acorn.lives, c: window.__fsm.Acorn.combo
+  }));
+  rec('T11', '好橡果漏接只断连击不扣命不进结算',
+    st11.s === 'play' && st11.lives === 3 && st11.c === 0,
+    `state=${st11.s} lives=${st11.lives}(应为3) combo=${st11.c}(应为0)`);
+
+  /* ---- T11b 接坏东西扣命 + 归零结算（主路径之一）----
+     游戏结束只走两条路：接坏东西扣命归零，或者倒计时到零。
+     T11 把漏接那条路堵住了，归零流程只能靠接坏东西触发 —— 这里测一遍。 */
+  await page.evaluate(() => {
+    const A = window.__fsm.Acorn;
+    A.nuts.length = 0; A.lives = 1; A.combo = 0;
+    window.__fsm.Game.score = 80;
+    /* y=owlY-26 到 owlY+46 之间会被判定为「接到」，x 在 owlX ±52 之内 */
+    A.nuts.push({ x: A.owlX, y: 405, vy: 0.6, kind: 'shroom', rot: 0, vr: 0, swing: 0 });
+  });
+  await wait(500);
+  const st11b = await page.evaluate(() => ({
+    s: window.__fsm.Game.state, lives: window.__fsm.Acorn.lives, sc: window.__fsm.Game.score
+  }));
+  rec('T11b', '接坏东西扣命归零进结算',
+    st11b.s === 'result' && st11b.lives <= 0 && st11b.sc < 80,
+    `state=${st11b.s} lives=${st11b.lives} score=${st11b.sc}(应为 < 80)`);
 
   /* ---- T12 结算页最高分写入 localStorage（按难度分键） ----
      T5 末尾已把难度复位到 easy，T8 用 easy 启动接橡果，所以此刻是 _easy。
@@ -274,7 +299,7 @@ async function sample(page, x, y, w, h) {
   const againR = await page.evaluate(() => window.__fsm.againRect());
   await clickAt(page, ...center(againR)); await wait(500);
   const st13 = await page.evaluate(() => ({ s: window.__fsm.Game.state, sc: window.__fsm.Game.score, lv: window.__fsm.Acorn.lives }));
-  rec('T13', '结算页「再来一次」重开本局', st13.s === 'play' && st13.sc === 0 && st13.lv === 5,
+  rec('T13', '结算页「再来一次」重开本局', st13.s === 'play' && st13.sc === 0 && st13.lv === 3,
     `state=${st13.s} score=${st13.sc} lives=${st13.lv}`);
 
   /* ---- T43 接到坏东西：扣分 + 断连击 + 掉一条命 ----
@@ -619,17 +644,26 @@ async function sample(page, x, y, w, h) {
   const diffsCmp = {};
   for (let di = 0; di < 3; di++) {
     await clickAt(page, ...center(acornOpts[di])); await wait(200);
-    await clickAt(page, ...center(cardRects[IDX_ACORN])); await wait(400);
-    diffsCmp[['easy', 'normal', 'hard'][di]] = await page.evaluate(() => ({
-      lives: window.__fsm.Acorn.lives,
-      maxNuts: window.__fsm.Acorn.nuts.length
-    }));
-    await page.evaluate(() => { window.__fsm.Game.state = 'menu'; });
-    await wait(150);
+    /* 只切档，不进 play。maxNuts 是 cfg 量，进 play 才能验；但 cfg 也可直接读，稳。 */
+    diffsCmp[['easy', 'normal', 'hard'][di]] = await page.evaluate(() => {
+      const d = window.__fsm.Game.diff;
+      const c = window.__fsm.ACORN_CFG[d];
+      return { lives: c.lives, maxNuts: c.maxNuts, vy: c.vy, bad: c.bad };
+    });
   }
-  const easyL = diffsCmp.easy.lives, hardL = diffsCmp.hard.lives;
-  rec('T24', '难度真实改变玩法数值（生命数递减）', easyL > hardL,
-    `简单${easyL}命 / 普通${diffsCmp.normal.lives}命 / 困难${hardL}命`);
+  /* P0.1 改后：三档 lives 统一=3，难度梯度改由 maxNuts / vy / bad 体现。 */
+  const sameLives = diffsCmp.easy.lives === diffsCmp.normal.lives &&
+                    diffsCmp.normal.lives === diffsCmp.hard.lives && diffsCmp.hard.lives === 3;
+  const monoNuts = diffsCmp.easy.maxNuts < diffsCmp.normal.maxNuts &&
+                   diffsCmp.normal.maxNuts < diffsCmp.hard.maxNuts;
+  const monoVy = diffsCmp.easy.vy < diffsCmp.normal.vy && diffsCmp.normal.vy < diffsCmp.hard.vy;
+  const monoBad = diffsCmp.easy.bad < diffsCmp.normal.bad && diffsCmp.normal.bad < diffsCmp.hard.bad;
+  rec('T24', '难度真实改变玩法数值（生命数统一3，maxNuts/vy/bad 随难度递增）',
+    sameLives && monoNuts && monoVy && monoBad,
+    `三档 lives=${diffsCmp.easy.lives}/${diffsCmp.normal.lives}/${diffsCmp.hard.lives}  ` +
+    `maxNuts=${diffsCmp.easy.maxNuts}/${diffsCmp.normal.maxNuts}/${diffsCmp.hard.maxNuts}  ` +
+    `vy=${diffsCmp.easy.vy}/${diffsCmp.normal.vy}/${diffsCmp.hard.vy}  ` +
+    `bad=${diffsCmp.easy.bad}/${diffsCmp.normal.bad}/${diffsCmp.hard.bad}`);
 
   /* ---- T25 接橡果：指针拖动真实操控 ---- */
   await clickAt(page, ...center(acornOpts[0])); await wait(200);
