@@ -1127,10 +1127,15 @@ function drawResult(){
 /* ramp = 局末速度相对开局速度的倍率。
    只提速度，不提坏东西比例 —— 分辨好坏已经占掉一大半注意力，
    后期再往上加判断量，孩子会直接放弃分辨、退化成纯碰运气。 */
+/* 全档 lives=3。原先 5/3/2 看似难度梯度，但漏掉好橡果就扣命，
+   「来不及」直接判孩子失误 —— 违反「不惩罚来不及」铁律。
+   改后难度只来自「落得更快 / 坏物比例更高 / 同屏更多」。
+   接坏东西仍掉命（那是判断错），但命数统一 3 命，让三档难度差异
+   体现在判断压力上、而不是「孩子手慢就输」。 */
 var ACORN_CFG = {
-  easy:   { vy:2.1, gap:74, maxNuts:2, lives:5, moveSpd:7.5, time:60, bad:0.20, penalty:8,  ramp:1.45 },
+  easy:   { vy:2.1, gap:74, maxNuts:2, lives:3, moveSpd:7.5, time:60, bad:0.20, penalty:8,  ramp:1.45 },
   normal: { vy:3.1, gap:54, maxNuts:3, lives:3, moveSpd:8.5, time:45, bad:0.34, penalty:12, ramp:1.60 },
-  hard:   { vy:4.3, gap:40, maxNuts:4, lives:2, moveSpd:9.5, time:30, bad:0.46, penalty:16, ramp:1.75 }
+  hard:   { vy:4.3, gap:40, maxNuts:4, lives:3, moveSpd:9.5, time:30, bad:0.46, penalty:16, ramp:1.75 }
 };
 /* 好东西只有橡果；坏东西是毛毛虫和毒蘑菇，接到扣分 */
 var BAD_KINDS = ['bug', 'shroom'];
@@ -1277,19 +1282,18 @@ function updateAcorn(dt){
     if(n.y > H + 30){
       Acorn.nuts.splice(i, 1);
       if(isGood){
-        /* 漏掉好橡果才是失误 */
+        /* 漏掉好橡果 = 来不及，不算判断错。
+           保留「断连击 + hurt 闪屏 + 错音」作反馈通道，让孩子知道漏了；
+           但绝不扣命 —— 「来不及」不是失误。接坏东西才掉命，那是判断错。 */
         Acorn.combo = 0;
-        Acorn.lives--;
         Acorn.hurt = 18;
         Audio2.bad();
       }else{
         /* 坏东西落地 = 躲对了，只记个数，不奖分也不罚分 */
         Acorn.dodged++;
       }
-      if(Acorn.lives <= 0){
-        endGame(Game.score, acornExtra());
-        return;
-      }
+      /* 漏接不再触发 endGame。游戏结束只走两条路：接坏东西扣命归零，
+         或者倒计时到零。 */
     }
   }
   for(var f = Acorn.catchFx.length - 1; f >= 0; f--){
@@ -1474,7 +1478,11 @@ for (var _ai = 0; _ai < ANIMAL_SRC.length; _ai++) {
    p4 启动时会把 __fsmExtras 并进 window.__fsm。 */
 window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
   ANIMAL_IMG: ANIMAL_IMG,
-  ANIMAL_SRC: ANIMAL_SRC
+  ANIMAL_SRC: ANIMAL_SRC,
+  /* T24 要直接读当前难度的 maxNuts（同时屏最多几个掉落物）来证三档梯度。
+     暴露 ACORN_CFG 后，测试不用进 play 等 400ms 后才数 nuts.length，
+     直接读 cfg 即可，稳。 */
+  ACORN_CFG: ACORN_CFG
 });
 var ANIMALS = [
   { fur:'#e9e9ef', ear:'pointy', eye:'#5ec2f0', nose:'#f2909f' },
