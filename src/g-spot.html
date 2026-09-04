@@ -407,17 +407,22 @@ function startSpot(){
   Spot.el = 0; Spot.left = c.time; Spot.timeLimit = c.time;
   Spot.over = false;
   Spot.wrongT = 0;
-  Game.score = c.base;
+  Game.score = 0;
   Game.banner = 90;
 }
 
-/* 实时分数：找齐了才给剩余机会奖励，没找齐不给 */
-function spotScore(){
-  var c = spotCfg();
-  var timePen = Math.floor(Spot.el / 60 * 4);
-  var missPen = Spot.misses * 60;
+/* HUD 实时分：开局 0 分，找到一处 +120，点错 -40。
+   base（难度基准分）不进 HUD —— 开局就挂着 900 分的话，找到一处只涨 13%，
+   孩子感知不到「我找对了」。base 留到结算再加，跨难度可比性由它保证。
+   没有时间罚：慢一点但全找齐就是成功，「来不及」不被扣分；
+   hard 档超时直接判负（spotLose），那已经是惩罚，不叠加第二层。 */
+function spotLive(){
   var bonus = (Spot.spots.length && Spot.found >= Spot.spots.length) ? Spot.lives * 150 : 0;
-  return Math.max(50, Math.floor(c.base + Spot.found * 120 + bonus - timePen - missPen));
+  return Math.max(0, Spot.found * 120 + bonus - Spot.misses * 40);
+}
+/* 结算分 = 难度基准 + 局内表现，下限 50。 */
+function spotScore(){
+  return Math.max(50, spotCfg().base + spotLive());
 }
 
 function spotWin(){
@@ -472,7 +477,7 @@ function updateSpot(dt){
     Spot.left = Math.max(0, Spot.left - dt / 60);
     if(Spot.left <= 0){ spotLose('时间到'); return; }
   }
-  Game.score = spotScore();
+  Game.score = spotLive();
 }
 
 /* ---------- 绘制 ---------- */
@@ -605,7 +610,7 @@ function drawSpot(){
 /* 用 Object.assign 合并而不是直接赋值：p3 已经往这里挂过 ANIMAL_IMG，
    直接整个赋值会把前面挂的东西冲掉。 */
 window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
-  Spot:Spot, spotPanel:spotPanel, spotCfg:spotCfg, spotScore:spotScore,
+  Spot:Spot, spotPanel:spotPanel, spotCfg:spotCfg, spotScore:spotScore, spotLive:spotLive,
   SPOT_BG_IMG:SPOT_BG_IMG, SPOT_ART:SPOT_ART, SPOT_PAL:SPOT_PAL,
   SPOT_KINDS:SPOT_KINDS, spotTinted:spotTinted, SPOT_DRAW:SPOT_DRAW
 });

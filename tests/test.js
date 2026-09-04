@@ -808,9 +808,13 @@ async function sample(page, x, y, w, h) {
     st39.s === 'result' && st39.lives <= 0 && st39.m === lives39,
     `点错 ${st39.m} 次（机会 ${lives39}）-> state=${st39.s} lives=${st39.lives}`);
 
-  /* ---- T40 找不同：全部找齐进结算，分数高于基数 ---- */
+  /* ---- T40 找不同：全部找齐进结算，分数等于满分（不限时档无时间罚） ----
+     P0.3 修复：easy/normal 是 time=0 不限时档，但原代码仍按时间扣 penalty。
+     现在先等 5 秒，再全部找齐；如果还有 timePen，分数会低于理论满分。 */
   await enterSpot('easy');
   const base40 = await page.evaluate(() => window.__fsm.spotCfg().base);
+  const lives40 = await page.evaluate(() => window.__fsm.Spot.lives);
+  await wait(5000);   /* 故意等 5 秒，证明 easy 档不计时 */
   await page.evaluate(async () => {
     const f = window.__fsm, S = f.Spot, p0 = f.spotPanel(0);
     for (let i = 0; i < S.spots.length; i++) {
@@ -820,10 +824,27 @@ async function sample(page, x, y, w, h) {
     }
   });
   await wait(700);
+  const expected40 = base40 + 3 * 120 + lives40 * 150;   /* base + 3 处差异 + 剩余机会奖励 */
   const st40 = await page.evaluate(() => ({ s: window.__fsm.Game.state, sc: window.__fsm.Game.score, f: window.__fsm.Spot.found }));
-  rec('T40', '找不同：全部找齐进结算且分数高于基数',
-    st40.s === 'result' && st40.f === 3 && st40.sc > base40,
-    `state=${st40.s} 找到 ${st40.f}/3  score=${st40.sc}（基数 ${base40}）`);
+  rec('T40', '找不同：全部找齐进结算且 easy 档等 5 秒仍拿满分（无隐形时间罚）',
+    st40.s === 'result' && st40.f === 3 && st40.sc === expected40,
+    `state=${st40.s} 找到 ${st40.f}/3  score=${st40.sc}（期望 ${expected40}=base${base40}+360+bonus${lives40*150}）`);
+
+  /* ---- T40b HUD 开局 0 分，base 只在结算时加（P0.4） ----
+     原代码开局 HUD 就挂着 base（900 分），找到一处 +120 只涨 13%，
+     孩子感知不到「我找对了」。现在 HUD 只算局内表现，base 留到结算。 */
+  await enterSpot('easy');
+  const hud0 = await page.evaluate(() => window.__fsm.Game.score);
+  await page.evaluate(() => {
+    const f = window.__fsm, S = f.Spot, p0 = f.spotPanel(0);
+    f.curGame().tap(p0.x + S.spots[0].lx, p0.y + S.spots[0].ly);
+  });
+  await wait(300);
+  const hud1 = await page.evaluate(() => window.__fsm.Game.score);
+  const base40b = await page.evaluate(() => window.__fsm.spotCfg().base);
+  rec('T40b', '找不同：HUD 开局 0 分，找到一处只加局内分（base 不进 HUD）',
+    hud0 === 0 && hud1 === 120 && base40b === 900,
+    `HUD 开局=${hud0}（期望0）  找到一处后=${hud1}（期望120）  base=${base40b}（只进结算）`);
 
   /* ---- T41 找不同：困难档限时，倒计时真的在走（且按秒不按帧） ---- */
   await enterSpot('hard');
