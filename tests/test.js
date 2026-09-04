@@ -502,9 +502,16 @@ async function sample(page, x, y, w, h) {
     }
   });
   await wait(900);
-  const st18 = await page.evaluate(() => ({ s: window.__fsm.Game.state, sc: window.__fsm.Game.score }));
-  rec('T18', '记忆翻牌：全部配对后进入结算', st18.s === 'result' && st18.sc > 0,
-    `state=${st18.s} score=${st18.sc}`);
+  const st18 = await page.evaluate(() => {
+    const base = window.__fsm.gridCfg().base;
+    return { s: window.__fsm.Game.state, sc: window.__fsm.Game.score, flips: window.__fsm.Mem.flips,
+             n: window.__fsm.Mem.cards.length, base: base };
+  });
+  /* P0.2：删除时间罚后，理论最优翻牌（flips == cards.length）应直接拿到 base 满分。
+     T18 的自动解法是逐对翻，flips 正好等于 cards.length。 */
+  rec('T18', '记忆翻牌：全部配对后进入结算且完美玩法拿满分',
+    st18.s === 'result' && st18.sc === st18.base && st18.flips === st18.n,
+    `state=${st18.s} score=${st18.sc}（期望 base=${st18.base}） flips=${st18.flips}/${st18.n}`);
 
   /* ---- T19 结算页「换个游戏」回菜单 ---- */
   const homeR = await page.evaluate(() => window.__fsm.homeRect());

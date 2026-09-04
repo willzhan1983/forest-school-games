@@ -710,13 +710,13 @@ function updateMemory(dt){
       Mem.first = -1; Mem._second = -1;
       if(Mem.matched >= Mem.cards.length){
         var base = gridCfg().base;
-        /* Mem.el 累加的是帧数（dtF = dtSec * 60），不是秒。
-           这里漏了 /60 就变成每秒扣 240 分，4 秒即跌到下限 50 —— 每局都是 50 分，
-           saveBest 第一局之后再也触发不了「新纪录」。计分公式按秒写，就得按秒换算。 */
-        var timePenalty = Math.floor(Mem.el / 60 * 4);
+        /* Mem.el 原来被误当成秒参与 timePenalty（每秒扣 240 分），
+           导致完美翻牌也拿不到满分。现在只惩罚「翻错/多翻」的判断失误，
+           不惩罚「花的时间长」。完美玩法（flips == cards.length）直接拿 base 满分。
+           每多翻一次扣 6 分；一次不成功的配对会多 2 次翻牌 = 扣 12 分。 */
         var flipPenalty = Math.max(0, Mem.flips - Mem.cards.length) * 6;
-        Game.score = Math.max(50, base - timePenalty - flipPenalty);
-        endGame(Game.score, '用了 ' + Math.floor(Mem.el / 60) + ' 秒 · 翻了 ' + Mem.flips + ' 次');
+        Game.score = Math.max(50, base - flipPenalty);
+        endGame(Game.score, '翻了 ' + Mem.flips + ' 次');
       }
     }
   }
