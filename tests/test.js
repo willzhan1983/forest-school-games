@@ -38,6 +38,13 @@ const getOpts = (page) => page.evaluate(() => {
   const f = window.__fsm;
   return f.optsList(f.curGame()).map((_, i) => f.diffRect(i));
 });
+const getStartMenu = (page) => page.evaluate(() => window.__fsm.startMenuRect());
+async function chooseAndStart(page, card) {
+  await clickAt(page, ...center(card));
+  await wait(150);
+  await clickAt(page, ...center(await getStartMenu(page)));
+  await wait(600);
+}
 
 /* 快照 / 比对一块区域的像素。
    用来验证「找到了」的标记真的画出来了 —— 只查状态位会漏掉「数据对了但没画出来」。
@@ -218,12 +225,16 @@ async function sample(page, x, y, w, h) {
   rec('T7', '音乐按钮开/关两态视觉区分明显(亮度差>8)', Math.abs(sOn.lum - sOff.lum) > 8,
     `开态亮度=${sOn.lum} 关态亮度=${sOff.lum} 差=${Math.abs(sOn.lum - sOff.lum).toFixed(1)}`);
 
-  /* ---- T8 启动「接橡果」 ---- */
+  /* ---- T8 选择后由明确按钮启动「接橡果」 ---- */
   await clickAt(page, ...center(cardRects[IDX_ACORN]));
+  await wait(250);
+  const selected8 = await page.evaluate(() => ({ s: window.__fsm.Game.state, g: window.__fsm.Game.gameId }));
+  await clickAt(page, ...center(await getStartMenu(page)));
   await wait(600);
   const st8 = await page.evaluate(() => ({ s: window.__fsm.Game.state, g: window.__fsm.Game.gameId, lives: window.__fsm.Acorn.lives }));
-  rec('T8', '点击卡片启动接橡果', st8.s === 'play' && st8.g === 'acorn' && st8.lives === 3,
-    `state=${st8.s} gameId=${st8.g} lives=${st8.lives}(简单档应为3)`);
+  rec('T8', '选择卡片后点开始游戏才启动接橡果', selected8.s === 'menu' && selected8.g === 'acorn' &&
+    st8.s === 'play' && st8.g === 'acorn' && st8.lives === 3,
+    `选择后=${selected8.s}；开始后=${st8.s} gameId=${st8.g} lives=${st8.lives}(简单档应为3)`);
 
   /* ---- T9 橡果生成并下落 ---- */
   await wait(1400);
@@ -462,7 +473,7 @@ async function sample(page, x, y, w, h) {
   rec('T14', '游戏中点返回键回菜单', st14 === 'menu', `state=${st14}`);
 
   /* ---- T17 记忆翻牌：配对成功 ---- */
-  await clickAt(page, ...center(cardRects[IDX_MEM])); await wait(700);
+  await chooseAndStart(page, cardRects[IDX_MEM]);
   const memInfo = await page.evaluate(() => {
     const M = window.__fsm.Mem;
     return { n: M.cards.length, cols: M.cols, rows: M.rows, state: window.__fsm.Game.state };
@@ -532,7 +543,7 @@ async function sample(page, x, y, w, h) {
     await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('memory'); });
     await wait(150);
     await clickAt(page, ...center(gridRects[i])); await wait(200);
-    await clickAt(page, ...center(cardRects[IDX_MEM])); await wait(500);
+    await chooseAndStart(page, cardRects[IDX_MEM]);
     const g = await page.evaluate(() => ({
       n: window.__fsm.Mem.cards.length,
       cols: window.__fsm.Mem.cols,
@@ -562,7 +573,7 @@ async function sample(page, x, y, w, h) {
   }));
   let isoOk = iso.cur !== 'g64' && iso.memLs === 'g64';
   /* 接橡果的档位必须在 DIFFS 里，且能真的开起来不崩 */
-  await clickAt(page, ...center(cardRects[IDX_ACORN])); await wait(600);
+  await chooseAndStart(page, cardRects[IDX_ACORN]);
   const isoRun = await page.evaluate(() => ({ s: window.__fsm.Game.state, lives: window.__fsm.Acorn.lives }));
   isoOk = isoOk && isoRun.s === 'play' && isoRun.lives > 0;
   rec('T31', '档位按游戏隔离（翻牌 6×4 不污染接橡果）', isoOk,
@@ -674,7 +685,7 @@ async function sample(page, x, y, w, h) {
 
   /* ---- T25 接橡果：指针拖动真实操控 ---- */
   await clickAt(page, ...center(acornOpts[0])); await wait(200);
-  await clickAt(page, ...center(cardRects[IDX_ACORN])); await wait(500);
+  await chooseAndStart(page, cardRects[IDX_ACORN]);
   const x0 = await page.evaluate(() => window.__fsm.Acorn.owlX);
   await page.mouse.move(...(await page.evaluate(() => {
     const r = document.getElementById('game').getBoundingClientRect();
@@ -696,6 +707,21 @@ async function sample(page, x, y, w, h) {
   await clickAt(page, ...center(acornOptsPortrait[1])); await wait(300);
   const st26 = await page.evaluate(() => window.__fsm.Game.diff);
   rec('T26', '竖屏下难度按钮仍可点击', st26 === 'normal', `diff=${st26}`);
+  const start26 = await getStartMenu(page);
+  await clickAt(page, ...center(start26)); await wait(250);
+  const layout26 = await page.evaluate(() => {
+    const cv = document.getElementById('game').getBoundingClientRect();
+    const guide = document.getElementById('guide').getBoundingClientRect();
+    const f = window.__fsm, start = f.startMenuRect();
+    return {
+      state:f.Game.state, startBottom:start.y + start.h, H:f.H,
+      guideShown:document.getElementById('guide').classList.contains('show'),
+      separate:guide.top >= cv.bottom || guide.bottom <= cv.top
+    };
+  });
+  rec('T26b', '竖屏开始按钮在画面内，开场说明在画布外',
+    layout26.state === 'play' && layout26.startBottom <= layout26.H && layout26.guideShown && layout26.separate,
+    `state=${layout26.state} startBottom=${layout26.startBottom}/${layout26.H} guideShown=${layout26.guideShown} separate=${layout26.separate}`);
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
   await wait(400);
 
@@ -733,8 +759,7 @@ async function sample(page, x, y, w, h) {
   await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
   await wait(300);
   const cards35 = await getCards(page);
-  await clickAt(page, ...center(cards35[IDX_SPOT]));
-  await wait(700);
+  await chooseAndStart(page, cards35[IDX_SPOT]);
   const st35 = await page.evaluate(() => ({
     s: window.__fsm.Game.state, g: window.__fsm.Game.gameId,
     props: window.__fsm.Spot.L.length, spots: window.__fsm.Spot.spots.length
@@ -870,7 +895,7 @@ async function sample(page, x, y, w, h) {
      翻开后的卡片宽度只剩 6%，看起来像一条线或"看不到"。 */
   await page.evaluate(() => { window.dispatchEvent(new Event('resize')); window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
   await wait(600);
-  await clickAt(page, ...center(cardRects[IDX_MEM])); await wait(500);
+  await chooseAndStart(page, cardRects[IDX_MEM]);
   await page.evaluate(() => {
     const M = window.__fsm.Mem;
     /* 与 test-anim.js A1 同样的处理：牌堆随机，抽到深色动物时正面亮度只有 ~118，
@@ -902,7 +927,7 @@ async function sample(page, x, y, w, h) {
   await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
   await wait(200);
   const cards50 = await getCards(page);
-  await clickAt(page, ...center(cards50[IDX_WHACK])); await wait(700);
+  await chooseAndStart(page, cards50[IDX_WHACK]);
   const whackByDiff = {};
   for (const d of ['easy', 'normal', 'hard']) {
     await enterWhack(d);
@@ -1096,7 +1121,7 @@ async function sample(page, x, y, w, h) {
   await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
   await wait(200);
   const cards60 = await getCards(page);
-  await clickAt(page, ...center(cards60[IDX_PUZZLE])); await wait(700);
+  await chooseAndStart(page, cards60[IDX_PUZZLE]);
   const puzById = {};
   for (const p of ['p33', 'p43', 'p44']) {
     await enterPuzzle(p);

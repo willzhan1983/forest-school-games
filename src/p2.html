@@ -225,8 +225,9 @@ function cardMetrics(){
        卡片高度必须按游戏数量算 —— 之前写死 h=200，加到 5 个游戏后
        卡片堆到 878、难度按钮被推到 y=1214（画面只有 960），手机上根本点不到。 */
     var n = GAMES.length, topY = 130, gap = 12;
-    /* 底部预留：档位标题 12 + 按钮 56 + 间距 14 + 两行提示 36 + 余量 14 */
-    var reserve = 12 + 56 + 14 + 36 + 14;
+    /* 底部预留：档位标题、档位按钮和明确的「开始游戏」按钮。
+       方向键说明移到浏览器原生无障碍标签，避免在手机上占掉卡片空间。 */
+    var reserve = 14 + 56 + 14 + 60 + 14;
     var avail = H - topY - reserve;
     var h = Math.min(200, Math.max(112, Math.floor((avail - gap * (n - 1)) / n)));
     var w = W - 80, x0 = 40;
@@ -266,6 +267,12 @@ function diffMetrics(){
 function diffRect(i){
   var m = diffMetrics();
   return { x: m.x0 + i * (m.w + m.gap), y: m.y, w: m.w, h: m.h };
+}
+
+/* 首页统一开始入口：卡片只负责选择，孩子不会一碰卡片就误进游戏。 */
+function startMenuRect(){
+  var dm = diffMetrics();
+  return { x:W / 2 - 150, y:dm.y + dm.h + 14, w:300, h:60 };
 }
 
 function musicRect(){ return { x:14, y:14, w:56, h:56 }; }
@@ -552,29 +559,10 @@ function drawMenu(){
     ctx.globalAlpha = 1;
   }
 
+  drawButton(startMenuRect(), '开 始 游 戏', '#4caf6d', '#ffffff');
+
   drawMusicBtn(musicRect());
   drawLinkBtn(linkRect());
-
-  /* 底部操作提示。横屏 13px 太小：手机上画布被缩到 0.41 倍，实际只有 5px。
-     PR #11 提到 15px，竖屏 W=540 直接给 16。 */
-  ctx.fillStyle = 'rgba(31,77,46,.6)';
-  ctx.font = '400 ' + (VIEW.portrait ? 16 : 15) + 'px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-  /* 数字键提示跟着游戏数量走，别再写死「1 2 3」 */
-  var nums = GAMES.map(function(_, i){ return String(i + 1); }).join(' ');
-  var lbl = optsLabel(curGame(), false);
-  /* 竖屏下两行紧贴底部（H=960, 留 60px），横屏留 34/14 */
-  if(VIEW.portrait){
-    /* 卡片高度和难度按钮位置都是算出来的（见 cardMetrics / diffMetrics），
-       底部文字只能相对难度按钮定位 —— 写死 H-34 会被卡片压住。 */
-    var dmForText = diffMetrics();
-    var tY = dmForText.y + dmForText.h + 14;
-    ctx.fillText('键盘：← → 选择 · 空格 确认 · ' + nums + ' 选游戏 · Esc 返回', W / 2, tY);
-    ctx.fillText('触屏：点卡片选游戏，点' + lbl + '，游戏中按屏幕提示操作', W / 2, tY + 18);
-  }else{
-    ctx.fillText('键盘：← → 选择 · 空格 确认 / 动作 · ' + nums + ' 选游戏 · Esc 返回', W / 2, H - 34);
-    ctx.fillText('触屏：点卡片选游戏，点' + lbl + '，游戏中按屏幕提示操作', W / 2, H - 14);
-  }
 }
 
 function openRunner(){

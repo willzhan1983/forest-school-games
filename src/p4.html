@@ -60,10 +60,11 @@ canvas.addEventListener('pointerdown', function(e){
   if(Game.state === 'menu'){
     if(hitRect(p.x, p.y, padRect(musicRect()))){ Audio2.toggleMusic(); return; }
     if(hitRect(p.x, p.y, padRect(linkRect()))){ Audio2.click(); openRunner(); return; }
+    if(hitRect(p.x, p.y, padRect(startMenuRect()))){ Audio2.click(); startCurrent(); return; }
     for(var i = 0; i < GAMES.length; i++){
       if(hitRect(p.x, p.y, cardRect(i))){
         selectGame(GAMES[i].id); Audio2.click();
-        startCurrent(); return;
+        return;
       }
     }
     var opts = optsList(curGame());
@@ -107,6 +108,8 @@ function startCurrent(){
   if(g.start) g.start();
   Game.state = 'play';
   Input.pointX = null;
+  tipEl.style.display = 'none';
+  resize();
 }
 
 /* ============================================================
@@ -117,19 +120,17 @@ function bannerText(){
   var g = curGame();
   return g.banner || g.tip || '';
 }
-function drawBanner(){
-  if(Game.banner <= 0) return;
-  var a = clamp(Game.banner / 30, 0, 1);
-  ctx.globalAlpha = a;
-  ctx.fillStyle = 'rgba(20,40,30,.72)';
-  roundRect(W/2 - 300, 116, 600, 54, 26); ctx.fill();
-  /* 15px 在手机上只剩 6px，等于没写。开口提示是告诉孩子怎么玩的，
-     必须看得清，所以放大到 20px 并加粗。 */
-  ctx.fillStyle = '#fff';
-  ctx.font = '500 20px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(bannerText(), W/2, 143);
-  ctx.globalAlpha = 1;
+var layoutState = '';
+function syncGuide(){
+  if(!guideEl) return;
+  /* 返回菜单或进入结算页时移除为说明条预留的高度。 */
+  if(layoutState !== Game.state){
+    layoutState = Game.state;
+    resize();
+  }
+  var show = Game.state === 'play' && Game.banner > 0;
+  guideEl.classList.toggle('show', show);
+  if(show) guideEl.textContent = bannerText();
 }
 
 /* ============================================================
@@ -150,6 +151,8 @@ function loop(ts){
     if(gu.update) gu.update(dtF);
   }
 
+  syncGuide();
+
   srTick();
   ctx.clearRect(0, 0, W, H);
   if(Game.state === 'menu') drawMenu();
@@ -159,7 +162,6 @@ function loop(ts){
     if(gd.draw) gd.draw();
   }
 
-  if(Game.state === 'play') drawBanner();
 }
 
 /* ============================================================
@@ -184,7 +186,7 @@ window.__fsm = {
   diffName:diffName, optsIndex:optsIndex,
   cardRect:cardRect, diffRect:diffRect, musicRect:musicRect, linkRect:linkRect,
   /* 布局量本身也导出：菜单几何是算出来的，测试要能校验「5 个游戏时按钮还在画面内」 */
-  cardMetrics:cardMetrics, diffMetrics:diffMetrics, optsLabel:optsLabel,
+  cardMetrics:cardMetrics, diffMetrics:diffMetrics, startMenuRect:startMenuRect, optsLabel:optsLabel,
   againRect:againRect, homeRect:homeRect, memRect:memRect, backRect:backRect,
   openRunner:openRunner,
   _step:stepMap

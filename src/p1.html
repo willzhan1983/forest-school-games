@@ -18,6 +18,9 @@
     -webkit-tap-highlight-color:transparent;overscroll-behavior:none;}
   body{display:flex;align-items:center;justify-content:center;
     font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;}
+  /* 开局说明放在画布外。游戏进行时始终预留这段高度，提示淡出后画面
+     也不会突然缩放，竖屏下手指落点始终稳定。 */
+  body.game-active{box-sizing:border-box;padding-bottom:76px;}
   #wrap{position:relative;line-height:0;}
   #game{display:block;touch-action:none;background:#bfe8f7;border-radius:10px;
     box-shadow:0 10px 40px rgba(0,0,0,.28);}
@@ -35,6 +38,12 @@
   #tip button{background:rgba(255,255,255,.2);border:0;color:#fff;font-size:14px;
     padding:0 16px;min-height:44px;border-radius:999px;cursor:pointer;
     font-family:inherit;-webkit-appearance:none;}
+  #guide{position:fixed;left:50%;bottom:calc(12px + env(safe-area-inset-bottom, 0px));
+    transform:translateX(-50%);display:none;align-items:center;justify-content:center;
+    max-width:calc(100vw - 28px);min-height:44px;box-sizing:border-box;padding:9px 16px;
+    border-radius:14px;background:rgba(28,44,36,.92);color:#fff;font-size:15px;
+    line-height:1.45;text-align:center;pointer-events:none;z-index:20;}
+  #guide.show{display:flex;}
   /* 屏幕阅读器专用文本：canvas 里画的东西读屏软件一个字也读不到，
      关键状态得同步到这个 aria-live 区域，视觉上完全隐藏。 */
   #sr{position:absolute;width:1px;height:1px;overflow:hidden;
@@ -44,11 +53,12 @@
 <body>
 <div id="wrap">
   <canvas id="game" width="960" height="540" tabindex="0" role="application"
-    aria-label="森林学校课间十分钟，三个小游戏：接橡果、记忆翻牌、找不同。键盘按 1 2 3 选游戏，左右方向键选档位，空格开始，Esc 返回菜单。"></canvas>
+    aria-label="森林学校课间十分钟，包含接橡果、记忆翻牌、找不同、打地鼠和拼图。选择小游戏和档位后，点击开始游戏；键盘可用数字键选游戏、左右方向键选档位、空格开始、Esc 返回菜单。"></canvas>
   <div id="sr" aria-live="polite" aria-atomic="true"></div>
 </div>
 <!-- 提示条在 #wrap 外面：放进画布容器会挡住画布里的按钮 -->
 <div id="tip"><span>横屏玩更舒服，也可以继续竖屏</span><button id="tipClose">知道了</button></div>
+<div id="guide" role="status" aria-live="polite"></div>
 <script>
 (function(){
 'use strict';
@@ -67,10 +77,14 @@ var canvas = document.getElementById('game');
 var ctx = canvas.getContext('2d');
 var tipEl = document.getElementById('tip');
 var tipClose = document.getElementById('tipClose');
+var guideEl = document.getElementById('guide');
 
 function resize(){
   var dpr = Math.min(window.devicePixelRatio || 1, 2);
-  var availW = window.innerWidth, availH = window.innerHeight;
+  var availW = window.innerWidth;
+  var gameActive = typeof Game !== 'undefined' && Game.state === 'play';
+  /* 和 body 的 padding-bottom 保持一致，保证开局说明始终在画布外。 */
+  var availH = window.innerHeight - (gameActive ? 76 : 0);
   /* 横屏用 960×540，竖屏切 540×960。1.15 是宽松比例阈值（短边=长边就触发）
      —— 之前是给 1280×720 那种"接近横屏但略高"留余地的，逻辑不变。 */
   var portrait = (availH > availW * 1.15);
@@ -87,6 +101,7 @@ function resize(){
   ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
   ctx.imageSmoothingEnabled = true;
   VIEW.s = s; VIEW.dpr = dpr; VIEW.portrait = portrait;
+  document.body.classList.toggle('game-active', gameActive);
   if(portrait && availW < 760){
     tipEl.style.display = 'flex';
     clearTimeout(resize._t);
