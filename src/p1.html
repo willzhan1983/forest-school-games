@@ -84,7 +84,11 @@ function resize(){
   var availW = window.innerWidth;
   var gameActive = typeof Game !== 'undefined' && Game.state === 'play';
   /* 和 body 的 padding-bottom 保持一致，保证开局说明始终在画布外。 */
-  var availH = window.innerHeight - (gameActive ? 76 : 0);
+  /* 可用高度直接用 window.innerHeight：body 在游戏态下的 padding-bottom 已经把
+     画布往下推了 76px（见 CSS .game-active），画布 wrapper 实际渲染空间也少了
+     那 76px。再手动减一次会让缩放比算小，竖屏小屏 g64 卡片从 45.8 跌到 40.6px，
+     低于 44px 可点下限。PR #29 加的游戏态 padding 是 CSS 端处理，JS 端不该再减。 */
+  var availH = window.innerHeight;
   /* 横屏用 960×540，竖屏切 540×960。1.15 是宽松比例阈值（短边=长边就触发）
      —— 之前是给 1280×720 那种"接近横屏但略高"留余地的，逻辑不变。 */
   var portrait = (availH > availW * 1.15);
