@@ -3,9 +3,9 @@
  * 规则复刻自 src/g-whack.html（easy/normal/hard 三档 × 三档玩家水平）。
  *
  * 关键常量（与源码逐行对过）：
- *   弹出节奏：每 spawn ~spawn*0.3 帧一个（easy 52 / normal 36 / hard 26）
- *   生命时长：life 帧（easy 100 / normal 78 / hard 60）—— 含上升+维持+下降
- *   可点窗口：pop ≥ 0.35 ≈ 帧 3..30（~28 帧），即生命的前 28/60 ~ 47%
+ *   弹出节奏：每 spawn ~spawn*0.3 帧一个（easy 66 / normal 50 / hard 40）
+ *   生命时长：life 帧（easy 76 / normal 65 / hard 54）—— 含上升+维持+下降
+ *   可点窗口按难度的上升、停留、缩回时长计算，避免视觉时长与配置脱节
  *   同时露出数：≤ maxUp（easy 2 / normal 3 / hard 4）
  *   坏东西占比：bad（0.14 / 0.24 / 0.34）
  *   计分：好物 10*mult（mult=1..5，每 3 连击 +1）；坏物 -penalty（8/12/16）
@@ -35,9 +35,9 @@ const TRIALS = 400;
    洞阵只影响单洞大小（可点性），不影响出怪节奏，
    所以模拟只用横屏的 cols/rows —— 洞数同样是 6/9/12。 */
 const WHACK_CFG = {
-  easy:   { cols:3, rows:2, life:100, spawn:52, pad:34, maxHole:150, bad:0.14, maxUp:2, time:45, penalty:8  },
-  normal: { cols:3, rows:3, life:78,  spawn:36, pad:34, maxHole:128, bad:0.24, maxUp:3, time:45, penalty:12 },
-  hard:   { cols:4, rows:3, life:60,  spawn:26, pad:34, maxHole:96,  bad:0.34, maxUp:4, time:45, penalty:16 }
+  easy:   { cols:3, rows:2, life:76, spawn:66, rise:10, hold:50, fall:16, pad:34, maxHole:150, bad:0.14, maxUp:2, time:45, penalty:8  },
+  normal: { cols:3, rows:3, life:65, spawn:50, rise:9, hold:42, fall:14, pad:34, maxHole:128, bad:0.24, maxUp:3, time:45, penalty:12 },
+  hard:   { cols:4, rows:3, life:54, spawn:40, rise:8, hold:34, fall:12, pad:34, maxHole:96, bad:0.34, maxUp:4, time:45, penalty:16 }
 };
 const SKILLS = [
   { name:'完美', tapInt:5,  smart:true,  badAccident:0.00 },
@@ -45,14 +45,11 @@ const SKILLS = [
   { name:'普通', tapInt:12, smart:false, badAccident:0.04 }
 ];
 
-/* 弹出帧 t 是否在可点击区间。
-   源码 whackPop：t<8 asc / t<24 hold / t<34 desc（10 帧回到 0）；tap 要求 pop>=0.35。
-   反查：t=3 pop=3/8=0.375（OK），t=30 pop=1-(30-24)/10=0.4（OK），t=31 pop=0.3（NO）。 */
-function popHittable(t){
-  if(t < 3 || t > 30) return false;
-  if(t < 8)  return t / 8 >= 0.35;            /* 3..7 */
-  if(t < 24) return true;                     /* 8..23 */
-  return 1 - (t - 24) / 10 >= 0.35;           /* 24..30 */
+/* 弹出帧 t 是否在可点击区间，和源码 whackPop 的三个阶段保持同步。 */
+function popHittable(t, c){
+  if(t < c.rise) return t / c.rise >= 0.35;
+  if(t < c.rise + c.hold) return true;
+  return 1 - (t - c.rise - c.hold) / c.fall >= 0.35;
 }
 
 function simulateOne(skill, diff, seed){
@@ -92,7 +89,7 @@ function simulateOne(skill, diff, seed){
       for(let j = 0; j < nHoles; j++){
         const h = holes[j];
         if(h.st !== 1 && h.st !== 2) continue;
-        if(popHittable(h.t)) vis.push({j:j, h:h});
+        if(popHittable(h.t, c)) vis.push({j:j, h:h});
       }
 if(vis.length){
           /* 选目标：所有人都认得出坏东西（bug/shroom 视觉差异大），

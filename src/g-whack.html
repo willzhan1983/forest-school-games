@@ -8,8 +8,8 @@
  * 难度旋钮只调「密度/停留时长/坏东西比例」一类，**不调命数**。
  * 这条规则来自 PR 之前的体检：原接橡果 easy→normal 撑满率
  * 94%→6%，是命数 5→3、间隔 74→40 帧、坏东西 20%→46% 四个旋钮
- * 一起拧的平方级崩塌。这里三个洞数（6/9/12）+ 停留时长 1.0s
- * /0.78s/0.60s + 坏东西 0.14/0.24/0.34，撑满率曲线会平滑得多。
+ * 一起拧的平方级崩塌。这里三个洞数（6/9/12）+ 可点击时长 1.27s
+ * /1.08s/0.90s + 坏东西 0.14/0.24/0.34，撑满率曲线会平滑得多。
  *
  * 不扣命：打地鼠没有"漏接"概念（看不到就漏是常态），所以
  * "没打中冒出来的"只断连击，不掉分、不掉命 —— 惩罚"判断错"
@@ -36,11 +36,11 @@
  * 空间密度交给洞数（cols/rows）表达，单洞大小交给 maxHole 封顶。
  */
 var WHACK_CFG = {
-  easy:   { cols:3, rows:2, colsP:2, rowsP:3, life:100, spawn:52, pad:34, maxHole:150,
+  easy:   { cols:3, rows:2, colsP:2, rowsP:3, life:76, spawn:66, rise:10, hold:50, fall:16, pad:34, maxHole:150,
             bad:0.14, maxUp:2, time:45, penalty:8  },
-  normal: { cols:3, rows:3, colsP:3, rowsP:3, life:78,  spawn:36, pad:34, maxHole:128,
+  normal: { cols:3, rows:3, colsP:3, rowsP:3, life:65,  spawn:50, rise:9, hold:42, fall:14, pad:34, maxHole:128,
             bad:0.24, maxUp:3, time:45, penalty:12 },
-  hard:   { cols:4, rows:3, colsP:3, rowsP:4, life:60,  spawn:26, pad:34, maxHole:96,
+  hard:   { cols:4, rows:3, colsP:3, rowsP:4, life:54,  spawn:40, rise:8, hold:34, fall:12, pad:34, maxHole:96,
             bad:0.34, maxUp:4, time:45, penalty:16 }
 };
 var WHACK_FX = [];  /* 命中/失误飘字 */
@@ -53,7 +53,7 @@ function whackCfg(){
   var c = WHACK_CFG.easy;
   for(var i=0;i<DIFFS.length;i++) if(DIFFS[i].id===Game.diff){ c = WHACK_CFG[Game.diff]; break; }
   if(!VIEW.portrait) return c;
-  return { cols:c.colsP, rows:c.rowsP, life:c.life, spawn:c.spawn, pad:c.pad,
+  return { cols:c.colsP, rows:c.rowsP, life:c.life, spawn:c.spawn, rise:c.rise, hold:c.hold, fall:c.fall, pad:c.pad,
            maxHole:c.maxHole, bad:c.bad, maxUp:c.maxUp, time:c.time, penalty:c.penalty };
 }
 
@@ -85,15 +85,12 @@ function whackHoleRect(i){
 }
 
 /* 当前帧地鼠应该露多高：pop ∈ [0,1]。
-   上来 6 帧线性到 1，下去 5 帧线性到 0。st 状态机：
+   上升、停留、缩回均由难度配置决定。st 状态机：
    0=洞空  1=正在冒头  2=完全露出  3=命中后缩回  4=自动缩回。 */
-function whackPop(p){
-  /* 上升：8 帧到 1（更柔和，孩子看得清） */
-  if(p < 8) return p / 8;
-  /* 维持到 70% 帧 = 完全露出 1 */
-  if(p < 24) return 1;
-  /* 24~34 帧线性回到 0（最后 10 帧是"准备缩回"过渡） */
-  return Math.max(0, 1 - (p - 24) / 10);
+function whackPop(p, c){
+  if(p < c.rise) return p / c.rise;
+  if(p < c.rise + c.hold) return 1;
+  return Math.max(0, 1 - (p - c.rise - c.hold) / c.fall);
 }
 
 function startWhack(){
@@ -145,7 +142,7 @@ function updateWhack(dt){
       else h.k = 1 + Math.floor(Math.random() * 12);
       h.st = 1; h.t = 0;
     }
-    /* 生成间隔：easy 52 帧，normal 36，hard 26。dt=1 帧 = 1/60 秒。 */
+    /* 生成间隔：easy 66 帧，normal 50，hard 40。dt=1 帧 = 1/60 秒。 */
     Whack.spawnT = c.spawn + Math.floor(Math.random() * (c.spawn * 0.3));
   }
   /* 更新各洞 */
@@ -176,7 +173,7 @@ function whackTap(x, y){
     if(hitRect(x, y, {x:r.x-r.w*0.07, y:r.y-r.h*0.07, w:r.w*1.14, h:r.h*1.14})){
       var h = Whack.holes[i];
       if(h.st === 0) return;
-      var pop = whackPop(h.t);
+      var pop = whackPop(h.t, c);
       if(pop < 0.35) return;   /* 还没冒出来，不能算 */
       if(h.st === 3) return;   /* 已被命中 */
       if(h.isBad){
@@ -224,7 +221,7 @@ function drawWhack(){
     ctx.ellipse(r.x + r.w/2, r.y + r.h * 0.84, r.w * 0.36, r.h * 0.10, 0, 0, Math.PI*2);
     ctx.fill();
     /* 动物露头 —— 用 st 状态和 t 进度算 pop，画完后用 clip 让下半截藏在土里 */
-    var pop = (h.st === 0) ? 0 : whackPop(h.t);
+    var pop = (h.st === 0) ? 0 : whackPop(h.t, c);
     if(pop > 0){
       ctx.save();
       /* 裁掉洞底以下的部分：动物从 y=r.y+r.h*0.78 之下都不该看见 */
