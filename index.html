@@ -18,6 +18,9 @@
     -webkit-tap-highlight-color:transparent;overscroll-behavior:none;}
   body{display:flex;align-items:center;justify-content:center;
     font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;}
+  /* 开局说明放在画布外。游戏进行时始终预留这段高度，提示淡出后画面
+     也不会突然缩放，竖屏下手指落点始终稳定。 */
+  body.game-active{box-sizing:border-box;padding-bottom:76px;}
   #wrap{position:relative;line-height:0;}
   #game{display:block;touch-action:none;background:#bfe8f7;border-radius:10px;
     box-shadow:0 10px 40px rgba(0,0,0,.28);}
@@ -35,6 +38,12 @@
   #tip button{background:rgba(255,255,255,.2);border:0;color:#fff;font-size:14px;
     padding:0 16px;min-height:44px;border-radius:999px;cursor:pointer;
     font-family:inherit;-webkit-appearance:none;}
+  #guide{position:fixed;left:50%;bottom:calc(12px + env(safe-area-inset-bottom, 0px));
+    transform:translateX(-50%);display:none;align-items:center;justify-content:center;
+    max-width:calc(100vw - 28px);min-height:44px;box-sizing:border-box;padding:9px 16px;
+    border-radius:14px;background:rgba(28,44,36,.92);color:#fff;font-size:15px;
+    line-height:1.45;text-align:center;pointer-events:none;z-index:20;}
+  #guide.show{display:flex;}
   /* 屏幕阅读器专用文本：canvas 里画的东西读屏软件一个字也读不到，
      关键状态得同步到这个 aria-live 区域，视觉上完全隐藏。 */
   #sr{position:absolute;width:1px;height:1px;overflow:hidden;
@@ -44,11 +53,12 @@
 <body>
 <div id="wrap">
   <canvas id="game" width="960" height="540" tabindex="0" role="application"
-    aria-label="森林学校课间十分钟，三个小游戏：接橡果、记忆翻牌、找不同。键盘按 1 2 3 选游戏，左右方向键选档位，空格开始，Esc 返回菜单。"></canvas>
+    aria-label="森林学校课间十分钟，包含接橡果、记忆翻牌、找不同、打地鼠和拼图。选择小游戏和档位后，点击开始游戏；键盘可用数字键选游戏、左右方向键选档位、空格开始、Esc 返回菜单。"></canvas>
   <div id="sr" aria-live="polite" aria-atomic="true"></div>
 </div>
 <!-- 提示条在 #wrap 外面：放进画布容器会挡住画布里的按钮 -->
 <div id="tip"><span>横屏玩更舒服，也可以继续竖屏</span><button id="tipClose">知道了</button></div>
+<div id="guide" role="status" aria-live="polite"></div>
 <script>
 (function(){
 'use strict';
@@ -67,10 +77,14 @@ var canvas = document.getElementById('game');
 var ctx = canvas.getContext('2d');
 var tipEl = document.getElementById('tip');
 var tipClose = document.getElementById('tipClose');
+var guideEl = document.getElementById('guide');
 
 function resize(){
   var dpr = Math.min(window.devicePixelRatio || 1, 2);
-  var availW = window.innerWidth, availH = window.innerHeight;
+  var availW = window.innerWidth;
+  var gameActive = typeof Game !== 'undefined' && Game.state === 'play';
+  /* 和 body 的 padding-bottom 保持一致，保证开局说明始终在画布外。 */
+  var availH = window.innerHeight - (gameActive ? 76 : 0);
   /* 横屏用 960×540，竖屏切 540×960。1.15 是宽松比例阈值（短边=长边就触发）
      —— 之前是给 1280×720 那种"接近横屏但略高"留余地的，逻辑不变。 */
   var portrait = (availH > availW * 1.15);
@@ -87,6 +101,7 @@ function resize(){
   ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
   ctx.imageSmoothingEnabled = true;
   VIEW.s = s; VIEW.dpr = dpr; VIEW.portrait = portrait;
+  document.body.classList.toggle('game-active', gameActive);
   if(portrait && availW < 760){
     tipEl.style.display = 'flex';
     clearTimeout(resize._t);
@@ -630,8 +645,9 @@ function cardMetrics(){
        卡片高度必须按游戏数量算 —— 之前写死 h=200，加到 5 个游戏后
        卡片堆到 878、难度按钮被推到 y=1214（画面只有 960），手机上根本点不到。 */
     var n = GAMES.length, topY = 130, gap = 12;
-    /* 底部预留：档位标题 12 + 按钮 56 + 间距 14 + 两行提示 36 + 余量 14 */
-    var reserve = 12 + 56 + 14 + 36 + 14;
+    /* 底部预留：档位标题、档位按钮和明确的「开始游戏」按钮。
+       方向键说明移到浏览器原生无障碍标签，避免在手机上占掉卡片空间。 */
+    var reserve = 14 + 56 + 14 + 60 + 14;
     var avail = H - topY - reserve;
     var h = Math.min(200, Math.max(112, Math.floor((avail - gap * (n - 1)) / n)));
     var w = W - 80, x0 = 40;
@@ -671,6 +687,12 @@ function diffMetrics(){
 function diffRect(i){
   var m = diffMetrics();
   return { x: m.x0 + i * (m.w + m.gap), y: m.y, w: m.w, h: m.h };
+}
+
+/* 首页统一开始入口：卡片只负责选择，孩子不会一碰卡片就误进游戏。 */
+function startMenuRect(){
+  var dm = diffMetrics();
+  return { x:W / 2 - 150, y:dm.y + dm.h + 14, w:300, h:60 };
 }
 
 function musicRect(){ return { x:14, y:14, w:56, h:56 }; }
@@ -957,29 +979,10 @@ function drawMenu(){
     ctx.globalAlpha = 1;
   }
 
+  drawButton(startMenuRect(), '开 始 游 戏', '#4caf6d', '#ffffff');
+
   drawMusicBtn(musicRect());
   drawLinkBtn(linkRect());
-
-  /* 底部操作提示。横屏 13px 太小：手机上画布被缩到 0.41 倍，实际只有 5px。
-     PR #11 提到 15px，竖屏 W=540 直接给 16。 */
-  ctx.fillStyle = 'rgba(31,77,46,.6)';
-  ctx.font = '400 ' + (VIEW.portrait ? 16 : 15) + 'px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-  /* 数字键提示跟着游戏数量走，别再写死「1 2 3」 */
-  var nums = GAMES.map(function(_, i){ return String(i + 1); }).join(' ');
-  var lbl = optsLabel(curGame(), false);
-  /* 竖屏下两行紧贴底部（H=960, 留 60px），横屏留 34/14 */
-  if(VIEW.portrait){
-    /* 卡片高度和难度按钮位置都是算出来的（见 cardMetrics / diffMetrics），
-       底部文字只能相对难度按钮定位 —— 写死 H-34 会被卡片压住。 */
-    var dmForText = diffMetrics();
-    var tY = dmForText.y + dmForText.h + 14;
-    ctx.fillText('键盘：← → 选择 · 空格 确认 · ' + nums + ' 选游戏 · Esc 返回', W / 2, tY);
-    ctx.fillText('触屏：点卡片选游戏，点' + lbl + '，游戏中按屏幕提示操作', W / 2, tY + 18);
-  }else{
-    ctx.fillText('键盘：← → 选择 · 空格 确认 / 动作 · ' + nums + ' 选游戏 · Esc 返回', W / 2, H - 34);
-    ctx.fillText('触屏：点卡片选游戏，点' + lbl + '，游戏中按屏幕提示操作', W / 2, H - 14);
-  }
 }
 
 function openRunner(){
@@ -3077,10 +3080,11 @@ canvas.addEventListener('pointerdown', function(e){
   if(Game.state === 'menu'){
     if(hitRect(p.x, p.y, padRect(musicRect()))){ Audio2.toggleMusic(); return; }
     if(hitRect(p.x, p.y, padRect(linkRect()))){ Audio2.click(); openRunner(); return; }
+    if(hitRect(p.x, p.y, padRect(startMenuRect()))){ Audio2.click(); startCurrent(); return; }
     for(var i = 0; i < GAMES.length; i++){
       if(hitRect(p.x, p.y, cardRect(i))){
         selectGame(GAMES[i].id); Audio2.click();
-        startCurrent(); return;
+        return;
       }
     }
     var opts = optsList(curGame());
@@ -3124,6 +3128,8 @@ function startCurrent(){
   if(g.start) g.start();
   Game.state = 'play';
   Input.pointX = null;
+  tipEl.style.display = 'none';
+  resize();
 }
 
 /* ============================================================
@@ -3134,19 +3140,17 @@ function bannerText(){
   var g = curGame();
   return g.banner || g.tip || '';
 }
-function drawBanner(){
-  if(Game.banner <= 0) return;
-  var a = clamp(Game.banner / 30, 0, 1);
-  ctx.globalAlpha = a;
-  ctx.fillStyle = 'rgba(20,40,30,.72)';
-  roundRect(W/2 - 300, 116, 600, 54, 26); ctx.fill();
-  /* 15px 在手机上只剩 6px，等于没写。开口提示是告诉孩子怎么玩的，
-     必须看得清，所以放大到 20px 并加粗。 */
-  ctx.fillStyle = '#fff';
-  ctx.font = '500 20px system-ui,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(bannerText(), W/2, 143);
-  ctx.globalAlpha = 1;
+var layoutState = '';
+function syncGuide(){
+  if(!guideEl) return;
+  /* 返回菜单或进入结算页时移除为说明条预留的高度。 */
+  if(layoutState !== Game.state){
+    layoutState = Game.state;
+    resize();
+  }
+  var show = Game.state === 'play' && Game.banner > 0;
+  guideEl.classList.toggle('show', show);
+  if(show) guideEl.textContent = bannerText();
 }
 
 /* ============================================================
@@ -3167,6 +3171,8 @@ function loop(ts){
     if(gu.update) gu.update(dtF);
   }
 
+  syncGuide();
+
   srTick();
   ctx.clearRect(0, 0, W, H);
   if(Game.state === 'menu') drawMenu();
@@ -3176,7 +3182,6 @@ function loop(ts){
     if(gd.draw) gd.draw();
   }
 
-  if(Game.state === 'play') drawBanner();
 }
 
 /* ============================================================
@@ -3201,7 +3206,7 @@ window.__fsm = {
   diffName:diffName, optsIndex:optsIndex,
   cardRect:cardRect, diffRect:diffRect, musicRect:musicRect, linkRect:linkRect,
   /* 布局量本身也导出：菜单几何是算出来的，测试要能校验「5 个游戏时按钮还在画面内」 */
-  cardMetrics:cardMetrics, diffMetrics:diffMetrics, optsLabel:optsLabel,
+  cardMetrics:cardMetrics, diffMetrics:diffMetrics, startMenuRect:startMenuRect, optsLabel:optsLabel,
   againRect:againRect, homeRect:homeRect, memRect:memRect, backRect:backRect,
   openRunner:openRunner,
   _step:stepMap
