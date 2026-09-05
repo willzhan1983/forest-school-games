@@ -933,8 +933,9 @@ async function sample(page, x, y, w, h) {
     await enterWhack(d);
     whackByDiff[d] = await page.evaluate(() => {
       const f = window.__fsm, c = f.whackCfg();
-      return { cols:c.cols, rows:c.rows, life:c.life, spawn:c.spawn, pad:c.pad,
-               maxHole:c.maxHole, bad:c.bad, maxUp:c.maxUp,
+      return { cols:c.cols, rows:c.rows, life:c.life, spawn:c.spawn,
+               rise:c.rise, hold:c.hold, fall:c.fall,
+               pad:c.pad, maxHole:c.maxHole, bad:c.bad, maxUp:c.maxUp,
                time:c.time, penalty:c.penalty, nHoles:f.Whack.holes.length,
                hole:f.whackBoard().hole, timeLeft:f.Whack.timeLeft };
     });
@@ -944,15 +945,22 @@ async function sample(page, x, y, w, h) {
      gap 一个字段既当生成间隔又当洞间距，难度升高时间距变小反而把洞撑大了，
      横屏实测 easy 93.8 -> normal 57.7 -> hard 62.5px（hard 反弹变大）。 */
   const mono = w.easy.hole >= w.normal.hole && w.normal.hole >= w.hard.hole;
-  rec('T50', '打地鼠：卡片可点 + 三档配置生效（洞数递增 / 单洞递减）',
+  /* PR #28 把 life 从「名义时长」改成「rise+hold+fall 实际帧数」。
+     断言用派生式 life === rise + hold + fall，不再写死数字，
+     后续再调任何一档时长都不会把这条测试打挂。 */
+  const lifeOK = w.easy.life === w.easy.rise + w.easy.hold + w.easy.fall &&
+                  w.normal.life === w.normal.rise + w.normal.hold + w.normal.fall &&
+                  w.hard.life === w.hard.rise + w.hard.hold + w.hard.fall;
+  const lifeMono = w.easy.life > w.normal.life && w.normal.life > w.hard.life;
+  rec('T50', '打地鼠：卡片可点 + 三档配置生效（洞数递增 / 单洞递减 / life 与子步骤一致）',
     w.easy.nHoles === 6 && w.normal.nHoles === 9 && w.hard.nHoles === 12 &&
-    w.easy.life === 100 &&
+    lifeOK && lifeMono &&
     w.easy.bad === 0.14 && w.normal.bad === 0.24 && w.hard.bad === 0.34 &&
     w.easy.spawn > w.normal.spawn && w.normal.spawn > w.hard.spawn &&
     mono,
-    `easy ${w.easy.cols}x${w.easy.rows}=${w.easy.nHoles}洞 life=${w.easy.life} spawn=${w.easy.spawn} bad=${w.easy.bad} | ` +
-    `normal ${w.normal.cols}x${w.normal.rows}=${w.normal.nHoles}洞 spawn=${w.normal.spawn} | ` +
-    `hard ${w.hard.cols}x${w.hard.rows}=${w.hard.nHoles}洞 spawn=${w.hard.spawn} || ` +
+    `easy ${w.easy.cols}x${w.easy.rows}=${w.easy.nHoles}洞 life=${w.easy.life}(=${w.easy.rise}+${w.easy.hold}+${w.easy.fall}) spawn=${w.easy.spawn} bad=${w.easy.bad} | ` +
+    `normal life=${w.normal.life}(=${w.normal.rise}+${w.normal.hold}+${w.normal.fall}) | ` +
+    `hard life=${w.hard.life}(=${w.hard.rise}+${w.hard.hold}+${w.hard.fall}) || ` +
     `单洞 ${w.easy.hole}->${w.normal.hole}->${w.hard.hole}px ${mono ? '单调递减 OK' : '非单调!'}`);
 
   /* ---- T50b 打地鼠：两个朝向下单洞都够点（物理热区 >= 60px）----
