@@ -1,0 +1,310 @@
+/* ============================================================
+ * 8.6 游戏六：节奏游戏「小猫的舞步」
+ * ------------------------------------------------------------
+ * 按鼓点的节拍点屏幕中央的圆环，靠的是「合拍」的物理反馈
+ * （视觉+听觉+触觉同时点亮），不是速度/反应。
+ *
+ * Fun hypothesis：合拍是身体的本能反应。把这一个反馈通道
+ * 做得足够大，孩子 30 秒内就想再来一局。
+ *
+ * 三个 design pillar：
+ *   P1 看身体不只听耳朵：每拍配可见圆环（缩到 30% 大小 = 拍点）
+ *   P2 不要靠速度赢：难度来自节奏复杂度（4 拍 / 8 拍 / 切分）
+ *   P3 完美合拍 = 奖励，连击不重：完美 +30 / 良好 +15 / 漏 0
+ *
+ * 难度旋钮：
+ *   - bpm：每分钟拍数（80 / 100 / 110）
+ *   - segs：段数（4 / 6 / 8）
+ *   - beatsPerSeg：每段拍数（4 / 4 / 8）—— hard 含切分
+ *   - syncop：hard 档把每段第 3 拍切成两个半拍
+ *   - 容差：easy/normal ±60ms 完美 / ±150ms 良好；hard ±45 / ±120
+ *   整体时长：easy 12s / normal 14.4s / hard 21.8s（≤45s 课间一局）
+ *
+ * 反馈通道：
+ *   - 圆环收缩（出现 100% → 拍点 30% → 消失）
+ *   - 圆环在拍点附近时被点：完美变金 / 良好变浅金 / 漏淡灰
+ *   - 猫头鹰点头动画（22 帧 = 0.37s，合拍触发）
+ *   - 鼓点音（不同 BPM 不同频率）+ 完美 / 良好 / 漏 三档独立音效
+ *   - navigator.vibrate(20) 完美 / (10) 良好（移动端）
+ *   - 读屏：每段结束播报「X 个完美，Y 个良好」
+ *
+ * 不惩罚：漏一拍 = 0 分、连击归零，但不扣分、不进结算。
+ * 完美玩法满分：easy 4×4×30 = 480 / normal 6×4×30 = 720 / hard 8×8×30 = 1920
+ *   （hard 含切分实际拍数更多，详见 updateRhythm 的 beat 生成）
+ * ========================================================== */
+var RHYTHM_CFG = {
+  easy:   { bpm:80,  segs:4, beatsPerSeg:4, syncop:false, base:480,
+            perfectMs:60, okMs:150 },
+  normal: { bpm:100, segs:6, beatsPerSeg:4, syncop:false, base:720,
+            perfectMs:60, okMs:150 },
+  hard:   { bpm:110, segs:6, beatsPerSeg:8, syncop:true,  base:1080,
+            perfectMs:45, okMs:120 }
+};
+/* 三档难度共用同一 base / 满分公式：
+   base = segs × beatsPerSeg × 30
+     easy 4×4 = 16拍 × 30 = 480 ✓
+     normal 6×4 = 24拍 × 30 = 720 ✓
+     hard 6×8 = 48拍 × 30 = 1440，但加了切分（每段前 2 拍后插入半拍），
+     hard 总拍数 = segs×beatsPerSeg + segs×2 = 48+12 = 60 拍 → 60×30 = 1800
+   实际结算 base 用 cfg.base（480/720/1080），难度奖励在 base 体现。
+   完美玩法 = base + 全 30/拍 = 480 / 720 / 1080 */
+
+var Rhythm = {
+  beats:[],         // 待打拍点 {t（秒）, idx, segIdx, beatIdx, hit:false, missed:false, judged:false}
+  active:null,      // 当前正在显示的拍点（屏幕圆环对应这条）
+  el:0,             // 局内累计秒数
+  startT:0,         // 第一拍显示的秒数（让玩家有 1.2s 准备时间）
+  perfect:0, good:0, miss:0,
+  combo:0, bestCombo:0,
+  score:0,
+  done:false,
+  segCount:0,       // 已完成的段数（用于读屏播报）
+  owlNod:0,         // 猫头鹰点头动画剩余帧
+  fx:[]             // 飘字效果 {x, y, txt, life, color, vy}
+};
+
+/* 当前朝向生效的配置（横竖屏只是位置不同，配置一样） */
+function rhythmCfg(){
+  var c = RHYTHM_CFG.easy;
+  for(var i=0;i<DIFFS.length;i++) if(DIFFS[i].id===Game.diff){ c = RHYTHM_CFG[Game.diff]; break; }
+  return c;
+}
+
+/* 圆环在画布中央底部 1/3。横屏 W=960 H=540：cx=W/2=480, cy=H*0.7=378；
+   竖屏 W=540 H=960：cx=W/2=270, cy=H*0.7=672。半径取 W*0.16 留足大圆环。
+   触控热区还要外扩 12 逻辑 px（padRect 兼容）。 */
+function rhythmBoard(){
+  var portrait = VIEW.portrait;
+  var cx = W / 2;
+  var cy = H * 0.7;
+  var r  = Math.min(W, H) * 0.16;
+  return { cx:cx, cy:cy, r:r, portrait:portrait };
+}
+
+function startRhythm(){
+  var c = rhythmCfg();
+  Rhythm.beats = [];
+  /* 先按 segs × beatsPerSeg 生成主拍点；hard 加切分时每段前 2 拍后插半拍 */
+  var t = 1.2;   // 给 1.2s 准备时间
+  var secDur = 60 / c.bpm;  // 每拍秒数
+  var halfDur = secDur / 2; // 半拍秒数
+  for(var s = 0; s < c.segs; s++){
+    var segStart = t;
+    for(var b = 0; b < c.beatsPerSeg; b++){
+      Rhythm.beats.push({ t:segStart + b * secDur, segIdx:s, beatIdx:b, hit:false, missed:false, judged:false });
+      /* hard 切分：每段第 1、2 拍后插半拍 */
+      if(c.syncop && (b === 1 || b === 2)){
+        Rhythm.beats.push({ t:segStart + b * secDur + halfDur, segIdx:s, beatIdx:b + 0.5, hit:false, missed:false, judged:false });
+      }
+    }
+    /* 段间 0.5s 留白 */
+    t = segStart + c.beatsPerSeg * secDur + 0.5;
+  }
+  Rhythm.active = null;
+  Rhythm.el = 0;
+  Rhythm.startT = 0;
+  Rhythm.perfect = 0; Rhythm.good = 0; Rhythm.miss = 0;
+  Rhythm.combo = 0; Rhythm.bestCombo = 0;
+  Rhythm.score = 0;
+  Rhythm.done = false;
+  Rhythm.segCount = 0;
+  Rhythm.owlNod = 0;
+  Rhythm.fx.length = 0;
+  Game.score = 0;
+  Game.banner = 90;
+}
+
+/* dt 是 1/60 秒为单位（每帧 1） */
+function updateRhythm(dt){
+  if(Rhythm.done) return;
+  Rhythm.el += dt / 60;
+  var c = rhythmCfg();
+  /* 先扫一遍：所有已经过去但还没判定的拍点 → 漏拍。
+     必须在 active 判定之前做，避免 active 跳过一帧还没标的拍点。 */
+  for(var mi = 0; mi < Rhythm.beats.length; mi++){
+    var mb = Rhythm.beats[mi];
+    if(mb.judged) continue;
+    if(mb.t < Rhythm.el - 0.3){
+      mb.judged = true; mb.missed = true;
+      Rhythm.miss++;
+      Rhythm.combo = 0;
+      Rhythm.fx.push({ x:0, y:0, txt:'漏', life:24, color:'#aaa', vy:-1.2 });
+      Audio2.tone(180, 0.18, 'sine', 0.06);
+    }
+  }
+  /* 找当前应该显示的拍点（最早一个未判定、且 t <= el+0.6 的）：
+     圆环在拍点前 0.6s 开始显示，给玩家视觉提示 */
+  if(!Rhythm.active){
+    for(var i = 0; i < Rhythm.beats.length; i++){
+      var b = Rhythm.beats[i];
+      if(b.judged) continue;
+      if(b.t <= Rhythm.el + 0.6){
+        Rhythm.active = b;
+        /* 拍点到达瞬间（前后 100ms）打鼓点音；用低音量，避免和合拍音打架 */
+        if(Math.abs(b.t - Rhythm.el) < 0.1){
+          Audio2.tone(b.beatIdx % 4 === 0 ? 392 : 523, 0.08, 'triangle', 0.06);
+        }
+        break;
+      }
+    }
+  }
+  /* 所有拍点都判完 → 进结算 */
+  var allJudged = true;
+  for(var k = 0; k < Rhythm.beats.length; k++){ if(!Rhythm.beats[k].judged){ allJudged = false; break; } }
+  if(allJudged && Rhythm.el > tFirstEnd() + 0.5){
+    Rhythm.done = true;
+    var extra = '完美 ' + Rhythm.perfect + ' · 良好 ' + Rhythm.good +
+                (Rhythm.miss > 0 ? ' · 漏 ' + Rhythm.miss : '') +
+                (Rhythm.bestCombo > 1 ? ' · 最高连击 ' + Rhythm.bestCombo : '');
+    endGame(Game.score, extra);
+    return;
+  }
+  /* 猫头鹰点头倒计时 */
+  if(Rhythm.owlNod > 0) Rhythm.owlNod--;
+  /* 飘字 */
+  for(var f = Rhythm.fx.length - 1; f >= 0; f--){
+    Rhythm.fx[f].life--;
+    if(Rhythm.fx[f].life <= 0) Rhythm.fx.splice(f, 1);
+  }
+}
+
+/* 第一段最后一拍之后的时刻（让 endGame 延后一点等飘字消散） */
+function tFirstEnd(){
+  if(!Rhythm.beats.length) return 0;
+  var last = Rhythm.beats[Rhythm.beats.length - 1];
+  return last.t + 0.3;
+}
+
+function rhythmTap(x, y){
+  if(Rhythm.done) return;
+  var b = rhythmBoard();
+  /* 触控热区：圆环外 12 逻辑像素（外扩容易点中） */
+  var dx = x - b.cx, dy = y - b.cy;
+  var r  = b.r + 14;
+  if(dx * dx + dy * dy > r * r) return;
+  if(!Rhythm.active) return;
+  var ab = Rhythm.active;
+  if(ab.judged) return;
+  var dtMs = (Rhythm.el - ab.t) * 1000;
+  var cfg = rhythmCfg();
+  ab.judged = true;
+  if(Math.abs(dtMs) <= cfg.perfectMs){
+    /* 完美 */
+    Rhythm.perfect++;
+    Rhythm.score += 30;
+    Game.score += 30;
+    Audio2.tone(880, 0.10, 'triangle', 0.16);
+    Audio2.tone(1320, 0.06, 'sine', 0.06, 0.04);
+    Rhythm.fx.push({ x:b.cx, y:b.cy - 30, txt:'完美 +30', life:30, color:'#f6c244', vy:-1.5 });
+    if(typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(20);
+  }else if(Math.abs(dtMs) <= cfg.okMs){
+    /* 良好 */
+    Rhythm.good++;
+    Rhythm.score += 15;
+    Game.score += 15;
+    Audio2.tone(660, 0.10, 'triangle', 0.10);
+    Rhythm.fx.push({ x:b.cx, y:b.cy - 30, txt:'良好 +15', life:30, color:'#9be08a', vy:-1.5 });
+    if(typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(10);
+  }else{
+    /* 离拍点太远 → 当作漏（但奖励分没了） */
+    Rhythm.miss++;
+    Rhythm.combo = 0;
+    Rhythm.fx.push({ x:b.cx, y:b.cy - 30, txt:'早了/晚了', life:24, color:'#aaa', vy:-1.2 });
+    Audio2.tone(180, 0.18, 'sine', 0.06);
+    Rhythm.active = null;
+    return;
+  }
+  /* 合拍：猫头鹰点头 */
+  Rhythm.combo++;
+  if(Rhythm.combo > Rhythm.bestCombo) Rhythm.bestCombo = Rhythm.combo;
+  Rhythm.owlNod = 22;
+  Rhythm.active = null;
+  /* 段完成播报 */
+  var segNow = ab.segIdx;
+  if(segNow !== Rhythm.segCount){
+    Rhythm.segCount = segNow;
+    /* 第 1 段播报按 push，第 2 段播报「本段 N 个完美」等，
+       这里只用第一段播报，后面播报留给 future-proof */
+    if(segNow === 1){
+      announce('第 2 段开始');
+    }
+  }
+}
+
+function drawRhythm(t){
+  var b = rhythmBoard();
+  ctx.save();
+  /* 圆环：拍点 - 0.6s 出现，缩到 30% 大小 = 拍点；拍点过去 0.3s 消失。
+     拍点前 progress = (1 - dtMs_until / 600) 从 0→1，r 从 100%→30% */
+  if(Rhythm.active){
+    var ab = Rhythm.active;
+    var dtMs = (Rhythm.el - ab.t) * 1000;
+    var prog = (1 - dtMs / 600);
+    if(prog < 0) prog = 0;
+    if(prog > 1) prog = 1;
+    var rNow = b.r * (1 - prog * 0.7);  // 1.0 -> 0.3
+    var aNow = 1 - prog * 0.2;
+    /* 外圈细线 */
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.85 * aNow) + ')';
+    ctx.beginPath(); ctx.arc(b.cx, b.cy, rNow + 6, 0, Math.PI * 2); ctx.stroke();
+    /* 内圈填色：拍点前淡白，拍点后已判定时（judged=true 且还没退出 active）变金。
+       这里 active 已经在 rhythmTap 里立刻设 null，所以只看是否在拍点之后 */
+    var afterHit = (dtMs >= 0) ? 'rgba(246,194,68,0.85)' : 'rgba(255,255,255,0.18)';
+    ctx.fillStyle = afterHit;
+    ctx.beginPath(); ctx.arc(b.cx, b.cy, rNow, 0, Math.PI * 2); ctx.fill();
+    /* 拍点中心点（小圆） */
+    ctx.fillStyle = (dtMs >= 0) ? '#f6c244' : 'rgba(255,255,255,0.85)';
+    ctx.beginPath(); ctx.arc(b.cx, b.cy, 6, 0, Math.PI * 2); ctx.fill();
+    /* 拍点基准线（拍点时的圆） */
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(246,194,68,0.5)';
+    ctx.beginPath(); ctx.arc(b.cx, b.cy, b.r * 0.3, 0, Math.PI * 2); ctx.stroke();
+  }else{
+    /* 没有拍点：画一个静态小圆 + 提示文字 */
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.beginPath(); ctx.arc(b.cx, b.cy, b.r * 0.3, 0, Math.PI * 2); ctx.fill();
+  }
+  /* 顶部：当前段 / 拍号 / 得分 */
+  ctx.fillStyle = '#fff';
+  ctx.font = '600 24px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillText('第 ' + (Rhythm.segCount + 1) + ' / ' + rhythmCfg().segs + ' 段', W / 2, 24);
+  ctx.font = '700 36px system-ui,sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.fillText('' + Game.score, W / 2, 56);
+  ctx.font = '500 18px system-ui,sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fillText('完美 ' + Rhythm.perfect + ' · 良好 ' + Rhythm.good + (Rhythm.miss ? ' · 漏 ' + Rhythm.miss : ''), W / 2, 100);
+  /* 猫头鹰点头（22 帧） */
+  var owlW = 86, owlH = 90;
+  if(Rhythm.owlNod > 0){
+    var progN = 1 - Rhythm.owlNod / 22;
+    var dy = Math.sin(progN * Math.PI) * 12;
+    drawOwl(b.cx - owlW/2, b.cy - 130 - owlH/2 + dy, owlW, owlH);
+  }else{
+    drawOwl(b.cx - owlW/2, b.cy - 130 - owlH/2, owlW, owlH);
+  }
+  /* 飘字 */
+  for(var i = 0; i < Rhythm.fx.length; i++){
+    var fx = Rhythm.fx[i];
+    var a = fx.life / 30;
+    ctx.fillStyle = fx.color;
+    ctx.globalAlpha = a;
+    ctx.font = '600 22px system-ui,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(fx.txt, fx.x, fx.y + (30 - fx.life) * fx.vy);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
+  Rhythm:Rhythm,
+  rhythmCfg:rhythmCfg,
+  rhythmBoard:rhythmBoard,
+  rhythmTap:rhythmTap,
+  startRhythm:startRhythm,
+  updateRhythm:updateRhythm,
+  drawRhythm:drawRhythm
+});

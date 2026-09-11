@@ -793,7 +793,12 @@ function drawMemory(){
                     return;
                   }
                 }
-              } }
+              } },
+    /* 节奏游戏：tap 直接转发给 rhythmTap，
+       rhythmTap 内部会做触控热区判定（圆环外 14 逻辑像素） */
+    rhythm: { start:startRhythm, update:updateRhythm, draw:drawRhythm,
+              banner:'听到鼓点时点圆环，对准拍点越准分越高',
+              tap:function(x, y){ rhythmTap(x, y); } }
   };
   for(var i = 0; i < GAMES.length; i++){
     var m = impl[GAMES[i].id];

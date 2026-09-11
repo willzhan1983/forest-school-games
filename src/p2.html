@@ -84,7 +84,11 @@ var GAMES = [
   { id:'whack',  name:'打 地 鼠', who:'cat', mode:'level', desc:'点冒头的小动物',
     tip:'打中得分，打到毛毛虫和毒蘑菇扣分' },
   { id:'puzzle', name:'拼 图', who:'owl', mode:'puz', desc:'把图拼回原样',
-    tip:'点两块互换；角标数字告诉你它属于哪里' }
+    tip:'点两块互换；角标数字告诉你它属于哪里' },
+  /* 节奏游戏：圆环按拍点收缩，孩子在合拍瞬间点屏幕。难度走 BPM + 切分。
+     mode:'level' 复用 DIFFS 三档；banner 文案在 impl 里。 */
+  { id:'rhythm', name:'小猫的舞步', who:'owl', mode:'level', desc:'按鼓点节奏点圆环',
+    tip:'听到鼓点时点圆环，对准拍点越准分越高' }
 ];
 
 var DIFFS = [
@@ -269,10 +273,13 @@ function diffRect(i){
   return { x: m.x0 + i * (m.w + m.gap), y: m.y, w: m.w, h: m.h };
 }
 
-/* 首页统一开始入口：卡片只负责选择，孩子不会一碰卡片就误进游戏。 */
+/* 首页统一开始入口：卡片只负责选择，孩子不会一碰卡片就误进游戏。
+   6 张卡片时 diffY 已经到 888，竖屏下把 startMenuRect clamp 到 H-74，
+   让「开始游戏」按钮始终在画面内（不能溢出 960）。 */
 function startMenuRect(){
   var dm = diffMetrics();
-  return { x:W / 2 - 150, y:dm.y + dm.h + 14, w:300, h:60 };
+  var y = VIEW.portrait ? Math.min(dm.y + dm.h + 14, H - 74) : dm.y + dm.h + 14;
+  return { x:W / 2 - 150, y:y, w:300, h:60 };
 }
 
 function musicRect(){ return { x:14, y:14, w:56, h:56 }; }
