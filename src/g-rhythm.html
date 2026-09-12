@@ -49,6 +49,9 @@ var RHYTHM_CFG = {
    实际结算 base 用 cfg.base（480/720/1080），难度奖励在 base 体现。
    完美玩法 = base + 全 30/拍 = 480 / 720 / 1080 */
 
+/* 舞者的跑动帧循环（跑酷官方素材）。锁 BPM 播放，见 drawRhythm。 */
+var RUN_FRAMES = ['fz_run01', 'fz_run02', 'fz_run03', 'fz_run04'];
+
 var Rhythm = {
   beats:[],         // 待打拍点 {t（秒）, idx, segIdx, beatIdx, hit:false, missed:false, judged:false}
   active:null,      // 当前正在显示的拍点（屏幕圆环对应这条）
@@ -59,7 +62,8 @@ var Rhythm = {
   score:0,
   done:false,
   segCount:0,       // 已完成的段数（用于读屏播报）
-  owlNod:0,         // 猫头鹰点头动画剩余帧
+  owlNod:0,         // 舞者点头动画剩余帧
+  face:null,        // 即时表情 {name, t}：完美=开心，良好=笑眯眯，漏=惊讶
   fx:[]             // 飘字效果 {x, y, txt, life, color, vy}
 };
 
@@ -130,6 +134,9 @@ function updateRhythm(dt){
       Rhythm.combo = 0;
       Rhythm.fx.push({ x:0, y:0, txt:'漏', life:24, color:'#aaa', vy:-1.2 });
       Audio2.tone(180, 0.18, 'sine', 0.06);
+      /* 关键：卡死的 active 必须释放，否则下一拍永远轮不上场
+         （active 只在为 null 时才找下一个，漏拍不释放 = 游戏锁死） */
+      if(Rhythm.active === mb) Rhythm.active = null;
     }
   }
   /* 找当前应该显示的拍点（最早一个未判定、且 t <= el+0.6 的）：
@@ -159,8 +166,9 @@ function updateRhythm(dt){
     endGame(Game.score, extra);
     return;
   }
-  /* 猫头鹰点头倒计时 */
+  /* 舞者点头倒计时 */
   if(Rhythm.owlNod > 0) Rhythm.owlNod--;
+  if(Rhythm.face && --Rhythm.face.t <= 0) Rhythm.face = null;
   /* 飘字 */
   for(var f = Rhythm.fx.length - 1; f >= 0; f--){
     Rhythm.fx[f].life--;
@@ -196,6 +204,7 @@ function rhythmTap(x, y){
     Audio2.tone(880, 0.10, 'triangle', 0.16);
     Audio2.tone(1320, 0.06, 'sine', 0.06, 0.04);
     Rhythm.fx.push({ x:b.cx, y:b.cy - 30, txt:'完美 +30', life:30, color:'#f6c244', vy:-1.5 });
+    Rhythm.face = { name:faceName('cat', 'happy'), t:34 };
     if(typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(20);
   }else if(Math.abs(dtMs) <= cfg.okMs){
     /* 良好 */
@@ -204,12 +213,14 @@ function rhythmTap(x, y){
     Game.score += 15;
     Audio2.tone(660, 0.10, 'triangle', 0.10);
     Rhythm.fx.push({ x:b.cx, y:b.cy - 30, txt:'良好 +15', life:30, color:'#9be08a', vy:-1.5 });
+    Rhythm.face = { name:faceName('cat', 'smile'), t:34 };
     if(typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(10);
   }else{
     /* 离拍点太远 → 当作漏（但奖励分没了） */
     Rhythm.miss++;
     Rhythm.combo = 0;
     Rhythm.fx.push({ x:b.cx, y:b.cy - 30, txt:'早了/晚了', life:24, color:'#aaa', vy:-1.2 });
+    Rhythm.face = { name:faceName('cat', 'wow'), t:30 };
     Audio2.tone(180, 0.18, 'sine', 0.06);
     Rhythm.active = null;
     return;
@@ -276,14 +287,17 @@ function drawRhythm(t){
   ctx.font = '500 18px system-ui,sans-serif';
   ctx.fillStyle = 'rgba(255,255,255,0.75)';
   ctx.fillText('完美 ' + Rhythm.perfect + ' · 良好 ' + Rhythm.good + (Rhythm.miss ? ' · 漏 ' + Rhythm.miss : ''), W / 2, 100);
-  /* 猫头鹰点头（22 帧） */
-  var owlW = 86, owlH = 90;
-  if(Rhythm.owlNod > 0){
-    var progN = 1 - Rhythm.owlNod / 22;
-    var dy = Math.sin(progN * Math.PI) * 12;
-    drawOwl(b.cx - owlW/2, b.cy - 130 - owlH/2 + dy, owlW, owlH);
-  }else{
-    drawOwl(b.cx - owlW/2, b.cy - 130 - owlH/2, owlW, owlH);
+  /* 舞者：跑酷官方素材的 4 张跑动帧循环，转速锁 BPM（每拍换 2 帧）——
+     动画本身就变成节拍提示：看身体不用只听耳朵（design pillar P1）。
+     合拍瞬间（owlNod）换成 win 帧，给一个「对了！」的全身确认。 */
+  var progN = (Rhythm.owlNod > 0) ? Math.sin((1 - Rhythm.owlNod / 22) * Math.PI) * 12 : 0;
+  var danceY = b.cy - 130 - 48 + progN + Math.sin(Rhythm.el * 3) * 3;
+  var beatNow = Math.floor(Rhythm.el * (rhythmCfg().bpm / 60) * 2);
+  var frame = (Rhythm.owlNod > 0) ? 'fz_win' : RUN_FRAMES[((beatNow % RUN_FRAMES.length) + RUN_FRAMES.length) % RUN_FRAMES.length];
+  if(!drawRN(frame, b.cx, danceY, 100) &&
+     !drawCharH('fz_front', b.cx, danceY, 100)) drawFallbackCat(b.cx - 43, danceY - 45, 86, 90);
+  if(Rhythm.face){
+    drawEmote(Rhythm.face.name, b.cx + 74, danceY - 30, 52, Math.min(1, Rhythm.face.t / 12));
   }
   /* 飘字 */
   for(var i = 0; i < Rhythm.fx.length; i++){

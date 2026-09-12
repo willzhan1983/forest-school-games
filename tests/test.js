@@ -631,29 +631,49 @@ async function sample(page, x, y, w, h) {
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
   await wait(400);
 
-  /* ---- T23 角色立绘 base64 能真实解码（不是走兜底图） ---- */
-  const htmlSrc = fs.readFileSync(SRC, 'utf8');
-  /* 整条 data URI 一起抓（含 mime），不是只抓 base64 段：
-     找不同的背景图是 JPEG，写死 png 前缀的话它会被标成 DECODE-FAIL。 */
-  const uris = htmlSrc.match(/data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]{1000,}/g) || [];
-  const decoded = await page.evaluate(list => Promise.all(list.map(u => new Promise(res => {
-    const im = new Image();
-    im.onload = () => res({ ok: true, w: im.naturalWidth, h: im.naturalHeight });
-    im.onerror = () => res({ ok: false });
-    im.src = u;
-  }))), uris);
-  /* 分两类验：角色立绘（约 200×220）和掉落道具（统一 128 高、宽度不等）。
-     之前写死「正好 2 张且都 >100」，加了三张道具素材就误判失败 ——
-     按尺寸分档比数个数稳，加素材不用再改断言。 */
-  /* 分三档：立绘（~200×220）、道具/动物（统一 128 高）、场景背景（640×560 的 JPEG）。
-     之前写死「正好 2 张且都 >100」，加素材就误判失败 —— 按尺寸分档比数个数稳。 */
-  const chars = decoded.filter(d => d.ok && d.w >= 150 && d.w <= 300 && d.h >= 150);
-  const items = decoded.filter(d => d.ok && d.h >= 110 && d.h <= 128 && d.w > 50 && d.w < 150);
-  const bgs = decoded.filter(d => d.ok && d.w > 300);
-  const allOk = chars.length >= 2 && items.length >= 3 && bgs.length >= 1;
-  rec('T23', '立绘与道具 base64 全部解码成功', allOk,
-    `立绘 ${chars.length} 张 / 道具 ${items.length} 张 / 背景 ${bgs.length} 张 :: ` +
-    decoded.map((d, i) => `#${i}:${d.ok ? d.w + 'x' + d.h : 'DECODE-FAIL'}`).join(' '));
+  /* ---- T23 所有内联图片素材都能真实解码（不走兜底绘制） ----
+     以前的写法是扫 index.html 里的 base64 字面量，但角色/动作素材现在是
+     经 CH_B64 / RN_B64 映射在运行时拼 data URI 的，扫字符串根本看不见它们
+     （只能看见 ANIMAL_SRC 这种字面量数组）—— 于是"素材全挂了"它照样全绿。
+     改成直接查运行时所有图片对象：谁没解码出来就点名。 */
+  const assetChk = await page.evaluate(async () => {
+    const f = window.__fsm;
+    const groups = { 角色设定图: f.CH_IMG, 跑酷动作帧: f.RN_IMG, 动物脸: f.ANIMAL_IMG, 掉落道具: f.ITEM_IMG };
+    /* 等所有内联图解码完（最多 2 秒），避免刚进页面就判 FAIL */
+    const all = [];
+    for (const k in groups) {
+      const m = groups[k];
+      if (!m) continue;
+      (Array.isArray(m) ? m : Object.values(m)).forEach(im => all.push([k, im]));
+    }
+    const t0 = Date.now();
+    while (Date.now() - t0 < 2000 &&
+           all.some(([, im]) => !(im && im.complete && im.naturalWidth > 0))) {
+      await new Promise(r => setTimeout(r, 60));
+    }
+    const bad = [], counts = {};
+    for (const k in groups) {
+      const m = groups[k];
+      if (!m) { counts[k] = 'MISSING'; continue; }
+      const list = Array.isArray(m) ? m : Object.values(m);
+      let ok = 0;
+      list.forEach((im, i) => {
+        if (im && im.complete && im.naturalWidth > 0) ok++;
+        else bad.push(k + '[' + i + ']');
+      });
+      counts[k] = ok + '/' + list.length;
+    }
+    const bg = f.SPOT_BG_IMG;
+    const bgOk = !!(bg && bg.complete && bg.naturalWidth > 0);
+    const shroomOk = !!(f.ITEM_IMG && f.ITEM_IMG.shroom && f.ITEM_IMG.shroom.naturalWidth > 0);
+    return { counts, bad, bgOk, shroomOk };
+  });
+  const countsOk = Object.values(assetChk.counts).every(v => /^\d+\/\d+$/.test(v) && !v.startsWith('0/'));
+  rec('T23', '全部内联素材（设定图/跑酷动作帧/动物脸/道具/背景）都能真实解码',
+    countsOk && assetChk.bad.length === 0 && assetChk.bgOk && assetChk.shroomOk,
+    Object.entries(assetChk.counts).map(([k, v]) => k + ' ' + v).join(' · ') +
+    ` · 找不同底图=${assetChk.bgOk ? 'ok' : 'FAIL'}` +
+    (assetChk.bad.length ? ' · 未解码: ' + assetChk.bad.join(',') : ''));
 
   /* ---- T24 难度真的改变数值（不是只改了个标签） ---- */
   await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
@@ -713,8 +733,10 @@ async function sample(page, x, y, w, h) {
     const cv = document.getElementById('game').getBoundingClientRect();
     const guide = document.getElementById('guide').getBoundingClientRect();
     const f = window.__fsm, start = f.startMenuRect();
+    const dr = f.diffRect(1);
     return {
       state:f.Game.state, startBottom:start.y + start.h, H:f.H,
+      startTop:start.y, diffBottom:dr.y + dr.h,
       guideShown:document.getElementById('guide').classList.contains('show'),
       separate:guide.top >= cv.bottom || guide.bottom <= cv.top
     };
@@ -722,6 +744,12 @@ async function sample(page, x, y, w, h) {
   rec('T26b', '竖屏开始按钮在画面内，开场说明在画布外',
     layout26.state === 'play' && layout26.startBottom <= layout26.H && layout26.guideShown && layout26.separate,
     `state=${layout26.state} startBottom=${layout26.startBottom}/${layout26.H} guideShown=${layout26.guideShown} separate=${layout26.separate}`);
+  /* T26 的真根因：6 张卡片时「开始游戏」被 clamp 到 y=886，压住 y=888 的档位行，
+     点「普通」实际点到开始按钮。这里直接断言两个矩形不重叠 —— 只要还重叠，
+     难度按钮就永远点不中（T26 会以 diff=easy 的形式失败）。 */
+  rec('T26c', '竖屏下开始按钮不压住难度按钮（两矩形不重叠）',
+    layout26.startTop >= layout26.diffBottom,
+    `startTop=${layout26.startTop} diffBottom=${layout26.diffBottom}`);
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
   await wait(400);
 

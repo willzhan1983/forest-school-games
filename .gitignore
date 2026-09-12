@@ -7,3 +7,6 @@ node_modules/
 raw-items/*.png
 # 截图产物
 shots/
+
+# 素材目检预览（由 tools/mkchar.js / mkrunner.js 生成，可再生）
+raw-items/fd-preview/

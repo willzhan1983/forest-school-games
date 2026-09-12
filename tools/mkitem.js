@@ -288,7 +288,6 @@ async function strip(srcPath, outName) {
   /* 输出名必须和代码里的占位符一致：src/<name>.b64.txt → __<NAME>_B64__ */
   const JOBS = [
     /* p2 接橡果：掉落道具（透明 PNG） */
-    ['A_single_cute_cartoon_acorn__c_2026-09-01T14-42-11.png', 'acorn'],
     ['A_single_cute_cartoon_caterpil_2026-09-01T14-42-10.png', 'bug'],
     ['A_single_cute_cartoon_poisonou_2026-09-01T14-42-11.png', 'shroom'],
     /* p3 翻牌记忆：12 种动物脸（透明 PNG，索引顺序 = ANIMALS 数组顺序） */
@@ -333,9 +332,8 @@ async function strip(srcPath, outName) {
   /* g-puzzle 拼图：3 张方形场景图（每局随机抽一张作原图）。
      顺序无所谓，g-puzzle 用 round % 3 轮转；三张一起出，素材缺一张就会
      整局黑屏，所以 src 里不存在就抛错不静默。 */
-  total += await buildPuzzlePic(path.join(RAW, 'puz-classroom.png'), 'puz0');
-  total += await buildPuzzlePic(path.join(RAW, 'puz-picnic.png'),    'puz1');
-  total += await buildPuzzlePic(path.join(RAW, 'puz-sports.png'),    'puz2');
+  /* 拼图三张图已改用跑酷官方场景素材（见 tools/mkrunner.js + g-puzzle.html），
+     这里的 puz0/puz1/puz2 不再产出。函数 buildPuzzlePic 留着备用。 */
 
   /* 找不同 8 类的尺寸与基准色相 —— 抄进 src/g-spot.html 的 SPOT_ART */
   const keys = Object.keys(meta).filter(k => k.indexOf('sp_') === 0);

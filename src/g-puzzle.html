@@ -29,12 +29,16 @@ function puzCfg(){
 }
 
 /* 3 张图，每局 round 轮转，2+2+1 分布（保证 3 张图都被玩到过）。
-   索引 = round % 3，外部 +1 让第三张比前两张多玩一次。 */
-var PUZ_SRC = [
-  'data:image/jpeg;base64,__PUZ0_B64__',
-  'data:image/jpeg;base64,__PUZ1_B64__',
-  'data:image/jpeg;base64,__PUZ2_B64__'
-];
+   索引 = round % 3，外部 +1 让第三张比前两张多玩一次。
+   图源直接用跑酷官方素材里的三张场景远景（森林 / 教室 / 树屋）——
+   和跑酷游戏本体的世界一致，孩子拼完能认出「这是我跑过的那关」。
+   注意：这里从 RN_B64 派生 data URI，而不是再写一遍 __RN_BG_*_B64__ 占位符
+   —— merge.js 的 replace 只替换每处占位符的第一次出现，写两遍会残留报错。 */
+var PUZ_SRC = ['bg_forest', 'bg_classroom', 'bg_treehouse'].map(function(n){
+  var b64 = RN_B64[n];
+  var mime = (b64.indexOf('/9j/') === 0) ? 'image/jpeg' : 'image/png';
+  return 'data:' + mime + ';base64,' + b64;
+});
 var Puz = { imgs:[], pick:0, ready:false, n:0, cols:0, rows:0,
             order:[], sel:-1, moves:0, minSwaps:0, round:0, solvedT:0, done:false };
 
