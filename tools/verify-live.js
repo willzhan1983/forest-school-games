@@ -468,6 +468,67 @@ function rec(id, name, pass, detail) {
     `热区 ${w.easy.pxTap}/${w.normal.pxTap}/${w.hard.pxTap}px ｜ ` +
     `单洞 ${w.easy.pxHole}->${w.normal.pxHole}->${w.hard.pxHole}px ${mono ? '单调' : '非单调!'}`);
 
+  /* V18 玩法说明页线上可用：数据齐全 + 「开始游戏 → 说明 → 开始玩」这条链路通畅。
+     新增功能的线上风险不是"渲染坏了"（那肉眼就能看到），而是 SW 用
+     network-first 把旧版本缓存住 —— 页面看着正常，点的却是没有说明页的老逻辑，
+     而"有没有打开说明页"这种状态位不会被别处设过，只能靠真点一遍来验。 */
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await wait(500);
+  const hd18 = await page.evaluate(() => {
+    const f = window.__fsm, bad = [];
+    f.GAMES.forEach(g => {
+      const h = f.helpData(g.id);
+      if (!h) { bad.push(g.id + '=缺失'); return; }
+      const miss = f.HELP_ORDER.filter(k => !h[k] || !String(h[k]).trim());
+      if (miss.length) bad.push(g.id + '=' + miss.join('/'));
+    });
+    return { n:f.GAMES.length, bad, order:f.HELP_ORDER.length };
+  });
+  const sm18 = await page.evaluate(() => {
+    const f = window.__fsm;
+    f.Game.state = 'menu'; f.closeHelp(); f.selectGame('acorn');
+    return f.startMenuRect();
+  });
+  await clickAt(sm18.x + sm18.w / 2, sm18.y + sm18.h / 2);
+  await wait(450);
+  const op18 = await page.evaluate(() => ({
+    open:window.__fsm.Help.open, from:window.__fsm.Help.from,
+    hid:window.__fsm.Help.gameId, st:window.__fsm.Game.state }));
+  const pb18 = await page.evaluate(() => window.__fsm.helpBtnRects().primary);
+  await clickAt(pb18.x + pb18.w / 2, pb18.y + pb18.h / 2);
+  await wait(700);
+  const st18 = await page.evaluate(() => ({
+    st:window.__fsm.Game.state, open:window.__fsm.Help.open, g:window.__fsm.Game.gameId }));
+  /* 圆钮热区要守在卡片右上角：横竖屏各量一次（竖屏最挤，也是曾经出问题的那一档） */
+  const dotPct18 = () => page.evaluate(() => {
+    const f = window.__fsm, c = f.cardRect(0), h = f.cardHelpHitRect(0);
+    return +((h.y + h.h - c.y) / c.h).toFixed(2);
+  });
+  const dotL18 = await dotPct18();
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+  await wait(650);
+  const p18 = await page.evaluate(() => {
+    const f = window.__fsm;
+    f.Game.state = 'menu'; f.openHelp('acorn', 'start');
+    const p = f.helpPanel(), b = f.helpBtnRects();
+    const inCv = r => r.x >= -0.5 && r.y >= -0.5 && r.x + r.w <= f.W + 0.5 && r.y + r.h <= f.H + 0.5;
+    return { inP:inCv(p), inB:inCv(b.primary) && inCv(b.second), btnH:b.primary.h };
+  });
+  const dotP18 = await dotPct18();
+  await page.evaluate(() => window.__fsm.closeHelp());
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await wait(400);
+
+  const flowOK = op18.open === true && op18.from === 'start' && op18.hid === 'acorn' &&
+    op18.st === 'menu' && st18.st === 'play' && st18.open === false && st18.g === 'acorn';
+  rec('V18', '说明页线上可用：6 款数据齐全 + 开始游戏→说明→开始玩 链路通畅 + 圆钮守在右上角',
+    hd18.bad.length === 0 && hd18.order === 5 && flowOK &&
+    dotL18 <= 0.6 && dotP18 <= 0.6 && p18.inP && p18.inB && p18.btnH >= 44,
+    `${hd18.n} 款×${hd18.order} 块（缺失=${hd18.bad.join(',') || '无'}）｜` +
+    `点开始游戏→说明页=${op18.open}(${op18.from}/${op18.hid}) state=${op18.st}｜` +
+    `点开始玩→state=${st18.st} 面板=${st18.open}｜` +
+    `圆钮下边界 横${dotL18}/竖${dotP18}（≤0.6）｜竖屏面板在界内=${p18.inP}/${p18.inB} 按钮高=${p18.btnH}`);
+
   /* V10 全程结束仍零错误（跑完上面这些操作后复检） */
   rec('V10', '复验全程零运行时错误', errs.length === 0 && warns.length === 0,
     `error=${errs.length} warning=${warns.length}${errs[0] ? ' | ' + errs[0].slice(0, 90) : ''}`);
