@@ -402,6 +402,12 @@ function announce(txt){
   srEl.textContent = txt;
 }
 function srTick(){
+  /* 说明面板优先播报：读屏用户看不到画面，规则得完整念一遍。
+     Help 定义在 ui-help 片段（本文件之后），运行到这里时早已就绪。 */
+  if(typeof Help !== 'undefined' && Help.open){
+    announce('玩法说明，' + helpTitle(Help.gameId) + '。' + helpSummary(Help.gameId));
+    return;
+  }
   if(Game.state === 'menu'){
     var g = curGame();
     announce('菜单：' + g.name + '，' + (g.mode === 'grid' ? '棋盘' : '难度') +

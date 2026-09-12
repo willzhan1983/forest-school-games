@@ -21,6 +21,16 @@ window.addEventListener('keydown', function(e){
   if(Input.keys[k]) return;
   Input.keys[k] = true;
 
+  /* 说明面板吃掉键盘：空格 / 回车 = 主按钮，Esc = 关闭。
+     必须排在下面所有状态分支之前 —— 面板打开时底层的状态还停在 menu
+     或 result，不拦的话空格会被当成「开始游戏 / 再来一次」，
+     孩子只是想往下读，结果说明被关掉、还顺手又开了一局。 */
+  if(Help.open){
+    if(k === ' ' || k === 'enter'){ Audio2.click(); helpConfirm(); }
+    else if(k === 'escape'){ Audio2.click(); closeHelp(); }
+    return;
+  }
+
   if(Game.state === 'menu'){
     /* 数字键选游戏：1~N，N 随 GAMES.length 自动变化，加游戏不用改这里 */
     var num = parseInt(k, 10);
@@ -35,7 +45,8 @@ window.addEventListener('keydown', function(e){
       var j = (optsIndex() + 1) % list2.length;
       selectDiff(list2[j].id); Audio2.click();
     }else if(k === ' ' || k === 'enter'){
-      Audio2.click(); startCurrent();
+      /* 「开始游戏」现在先走开始页面的玩法说明，再进游戏（见 ui-help） */
+      Audio2.click(); startHelp();
     }
   }else if(Game.state === 'result'){
     if(k === ' ' || k === 'enter'){ Audio2.click(); startCurrent(); }
@@ -51,6 +62,9 @@ canvas.addEventListener('pointerdown', function(e){
   e.preventDefault();
   Audio2.init(); Audio2.kick();
   var p = toLogic(e.clientX, e.clientY);
+  /* 说明面板打开时吃掉所有点击 —— 包括落在面板空白处的。
+     不拦的话，孩子一边读一边点到下面的卡片，游戏被悄悄换掉了。 */
+  if(Help.open){ helpTap(p.x, p.y); return; }
   Input.down = true; Input.startY = p.y;
   if(e.pointerType && e.pointerType !== 'mouse') Input.touch = true;
   try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
@@ -60,8 +74,13 @@ canvas.addEventListener('pointerdown', function(e){
   if(Game.state === 'menu'){
     if(hitRect(p.x, p.y, padRect(musicRect()))){ Audio2.toggleMusic(); return; }
     if(hitRect(p.x, p.y, padRect(linkRect()))){ Audio2.click(); openRunner(); return; }
-    if(hitRect(p.x, p.y, padRect(startMenuRect()))){ Audio2.click(); startCurrent(); return; }
+    /* 「开始游戏」= 开始页面：先弹出这一局的玩法说明，孩子点「开始玩」才进游戏。
+       熟练后也就是多按一下，但第一次玩的人不会在不知道规则的情况下开局。 */
+    if(hitRect(p.x, p.y, padRect(startMenuRect()))){ Audio2.click(); startHelp(); return; }
     for(var i = 0; i < GAMES.length; i++){
+      /* 卡片上的「?」必须排在卡片本体之前 —— 两者区域重叠，
+         先判卡片的话点「?」会变成选中这个游戏。 */
+      if(hitRect(p.x, p.y, cardHelpHitRect(i))){ Audio2.click(); openHelp(GAMES[i].id, 'peek'); return; }
       if(hitRect(p.x, p.y, cardRect(i))){
         selectGame(GAMES[i].id); Audio2.click();
         return;
@@ -145,7 +164,10 @@ function loop(ts){
   Game.time += dtSec;
   var dtF = dtSec * 60;
 
-  if(Game.state === 'play'){
+  /* 说明面板打开时暂停整局：倒计时、掉落、刷新全部冻结。
+     只跳过 update 是不够的 —— Game.banner 也要停，否则提示条的 90 帧
+     会在面板打开期间自己走完，孩子关掉面板时刚好错过开场提示。 */
+  if(Game.state === 'play' && !Help.open){
     if(Game.banner > 0) Game.banner = Math.max(0, Game.banner - dtF);
     var gu = curGame();
     if(gu.update) gu.update(dtF);
@@ -161,7 +183,9 @@ function loop(ts){
     var gd = curGame();
     if(gd.draw) gd.draw();
   }
-
+  /* 说明面板盖在最上层，最后画 —— 无论从开始页面进来还是从卡片「?」进来，
+     都不能被底下的菜单或游戏画面盖掉。 */
+  if(Help.open) drawHelp();
 }
 
 /* ============================================================

@@ -39,10 +39,23 @@ const getOpts = (page) => page.evaluate(() => {
   return f.optsList(f.curGame()).map((_, i) => f.diffRect(i));
 });
 const getStartMenu = (page) => page.evaluate(() => window.__fsm.startMenuRect());
+/* 菜单点「开始游戏」→ 玩法说明页（开始页面）→ 主按钮「开始玩」才真正开局。
+   所有"从菜单进游戏"的用例都要走这一步，抽成一处：
+   流程再改的时候只用改这里，不用满文件找点击点。 */
+async function dismissStartHelp(page) {
+  const open = await page.evaluate(() => window.__fsm.Help.open);
+  if (!open) return false;
+  const pb = await page.evaluate(() => window.__fsm.helpBtnRects().primary);
+  await clickAt(page, ...center(pb));
+  await wait(220);
+  return true;
+}
 async function chooseAndStart(page, card) {
   await clickAt(page, ...center(card));
   await wait(150);
   await clickAt(page, ...center(await getStartMenu(page)));
+  await wait(250);
+  await dismissStartHelp(page);
   await wait(600);
 }
 
@@ -230,6 +243,8 @@ async function sample(page, x, y, w, h) {
   await wait(250);
   const selected8 = await page.evaluate(() => ({ s: window.__fsm.Game.state, g: window.__fsm.Game.gameId }));
   await clickAt(page, ...center(await getStartMenu(page)));
+  await wait(250);
+  await dismissStartHelp(page);   /* 新版流程：先看玩法说明，再点「开始玩」 */
   await wait(600);
   const st8 = await page.evaluate(() => ({ s: window.__fsm.Game.state, g: window.__fsm.Game.gameId, lives: window.__fsm.Acorn.lives }));
   rec('T8', '选择卡片后点开始游戏才启动接橡果', selected8.s === 'menu' && selected8.g === 'acorn' &&
@@ -613,13 +628,21 @@ async function sample(page, x, y, w, h) {
   await wait(200);
   await page.keyboard.press('Digit2'); await wait(400);
   const st20a = await page.evaluate(() => ({ s: window.__fsm.Game.state, g: window.__fsm.Game.gameId }));
-  await page.keyboard.press('Space'); await wait(500);
+  await page.keyboard.press('Space'); await wait(450);
+  /* 空格的第一下是打开玩法说明页（和点「开始游戏」同一个入口），
+     再按一下才进游戏 —— 键盘和触屏必须走同一条路，
+     否则"说明只在触摸时出现"这种不一致，恰恰是键盘用户会踩的坑。 */
+  const st20h = await page.evaluate(() => ({
+    s: window.__fsm.Game.state, open: window.__fsm.Help.open, hid: window.__fsm.Help.gameId }));
+  await page.keyboard.press('Space'); await wait(600);
   const st20b = await page.evaluate(() => ({ s: window.__fsm.Game.state, g: window.__fsm.Game.gameId }));
   await page.keyboard.press('Escape'); await wait(400);
   const st20c = await page.evaluate(() => window.__fsm.Game.state);
-  rec('T20', '键盘 数字键选中 + 空格开始 + Esc 返回',
-    st20a.s === 'menu' && st20a.g === 'memory' && st20b.s === 'play' && st20b.g === 'memory' && st20c === 'menu',
-    `按2 -> ${st20a.s}/${st20a.g}  空格 -> ${st20b.s}/${st20b.g}  Esc -> ${st20c}`);
+  rec('T20', '键盘 数字键选中 + 空格（先过说明页）开始 + Esc 返回',
+    st20a.s === 'menu' && st20a.g === 'memory' &&
+    st20h.s === 'menu' && st20h.open === true && st20h.hid === 'memory' &&
+    st20b.s === 'play' && st20b.g === 'memory' && st20c === 'menu',
+    `按2 -> ${st20a.s}/${st20a.g}  空格 -> 说明页=${st20h.open}(${st20h.hid})  再空格 -> ${st20b.s}/${st20b.g}  Esc -> ${st20c}`);
 
   /* ---- T21 竖屏不黑屏 ---- */
   await page.setViewport({ width: 420, height: 860, deviceScaleFactor: 1 });
@@ -729,6 +752,17 @@ async function sample(page, x, y, w, h) {
   rec('T26', '竖屏下难度按钮仍可点击', st26 === 'normal', `diff=${st26}`);
   const start26 = await getStartMenu(page);
   await clickAt(page, ...center(start26)); await wait(250);
+  /* 竖屏下最挤，说明页必须整块落在画布内 —— 越界就等于孩子读不到规则 */
+  const help26 = await page.evaluate(() => {
+    const f = window.__fsm, p = f.helpPanel(), b = f.helpBtnRects();
+    const inCv = r => r.x >= 0 && r.y >= 0 && r.x + r.w <= f.W && r.y + r.h <= f.H;
+    return { open:f.Help.open, inP:inCv(p), inB:inCv(b.primary), h:Math.round(p.h), H:f.H };
+  });
+  rec('T26h', '竖屏下玩法说明页已弹出且完整在画布内',
+    help26.open && help26.inP && help26.inB,
+    `open=${help26.open} 面板高=${help26.h}/${help26.H} inPanel=${help26.inP} inBtn=${help26.inB}`);
+  await dismissStartHelp(page);
+  await wait(350);
   const layout26 = await page.evaluate(() => {
     const cv = document.getElementById('game').getBoundingClientRect();
     const guide = document.getElementById('guide').getBoundingClientRect();
@@ -1268,6 +1302,151 @@ async function sample(page, x, y, w, h) {
   rec('T63', '拼图：罚分公式真的生效（多 1 步扣 pen 分）',
     st63.s === 'result' && st63.sc === w63.expected,
     `min=${w63.min} moves=${w63.moves} base=${w63.base} pen=${w63.pen} -> score=${st63.sc}（期望=${w63.expected} = base - (moves-min)*pen = ${w63.base}-${(w63.moves-w63.min)*w63.pen}）`);
+
+  /* ================= 玩法说明（开始页面） =================
+     这一组验的是"孩子真正会走的那条路"：菜单 → 开始游戏 → 玩法说明 → 开始玩。
+     不走通它，下面所有游戏逻辑的用例都成了"绕过 UI 直接开局"，
+     界面上真出问题时测试全绿。 */
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
+  await wait(450);
+
+  /* T54a 每款游戏五块说明都齐全 —— 加新游戏忘了写说明会在这里挂掉 */
+  const helpAll = await page.evaluate(() => {
+    const f = window.__fsm, bad = [];
+    f.GAMES.forEach(g => {
+      const h = f.helpData(g.id);
+      if (!h) { bad.push(g.id + '=缺失'); return; }
+      const miss = f.HELP_ORDER.filter(k => !h[k] || !String(h[k]).trim());
+      if (miss.length) bad.push(g.id + '=' + miss.join('/'));
+    });
+    return { n:f.GAMES.length, bad, order:f.HELP_ORDER.length };
+  });
+  rec('T54a', '每款游戏都有完整五块说明（目标/怎么玩/怎么得分/要小心/小诀窍）',
+    helpAll.bad.length === 0 && helpAll.order === 5,
+    `${helpAll.n} 款 · 每款 ${helpAll.order} 块 · 缺失=${helpAll.bad.join(',') || '无'}`);
+
+  /* T54b 点「开始游戏」进的是说明页，不是直接开局 */
+  await clickAt(page, ...center(await getStartMenu(page)));
+  await wait(320);
+  const h54b = await page.evaluate(() => {
+    const f = window.__fsm;
+    return { open:f.Help.open, from:f.Help.from, hid:f.Help.gameId, state:f.Game.state,
+             title:f.helpTitle(f.Help.gameId), primary:f.helpPrimaryText(),
+             diff:(f.DIFFS.filter(d => d.id === f.Game.diff)[0] || {}).name,
+             summary:(f.helpSummary(f.Help.gameId) || '').length };
+  });
+  rec('T54b', '点「开始游戏」先进玩法说明页（主按钮「开始玩」），不直接开局',
+    h54b.open === true && h54b.from === 'start' && h54b.hid === 'acorn' && h54b.state === 'menu' &&
+    h54b.primary.replace(/\s/g, '') === '开始玩' && h54b.title.indexOf('接 橡 果') >= 0 &&
+    !!h54b.diff && h54b.summary > 40,
+    `open=${h54b.open} from=${h54b.from} state=${h54b.state} 主按钮=${h54b.primary} 标题=${h54b.title} 读屏摘要=${h54b.summary}字`);
+
+  /* T54c 横竖屏都在画布内、按钮够大 */
+  const geo54 = () => page.evaluate(() => {
+    const f = window.__fsm, p = f.helpPanel(), b = f.helpBtnRects();
+    const inCv = r => r.x >= -0.5 && r.y >= -0.5 && r.x + r.w <= f.W + 0.5 && r.y + r.h <= f.H + 0.5;
+    return { p, inP:inCv(p), inB:inCv(b.primary) && inCv(b.second), btnH:b.primary.h, W:f.W, H:f.H };
+  });
+  const g54L = await geo54();
+  await page.setViewport({ width: 420, height: 860, deviceScaleFactor: 1 });
+  await wait(550);
+  const g54P = await geo54();
+  rec('T54c', '说明页在横竖屏都完整落在画布内，主按钮高度 ≥44',
+    g54L.inP && g54L.inB && g54P.inP && g54P.inB && g54L.btnH >= 44,
+    `横屏 ${Math.round(g54L.p.w)}×${Math.round(g54L.p.h)}(${g54L.inP}/${g54L.inB})；` +
+    `竖屏 ${Math.round(g54P.p.w)}×${Math.round(g54P.p.h)}(${g54P.inP}/${g54P.inB})；按钮高=${g54L.btnH}`);
+
+  /* T54d 面板打开时点底下的卡片不能穿透 —— 孩子一边读一边把游戏换掉了，是最容易漏的回归 */
+  const before54d = await page.evaluate(() => window.__fsm.Game.gameId);
+  const card54 = await page.evaluate(() => window.__fsm.cardRect(2));
+  await clickAt(page, ...center(card54));
+  await wait(280);
+  const after54d = await page.evaluate(() => ({
+    g:window.__fsm.Game.gameId, open:window.__fsm.Help.open, s:window.__fsm.Game.state }));
+  rec('T54d', '说明页打开时点击不会穿透到下面的卡片',
+    after54d.open === true && after54d.g === before54d && after54d.s === 'menu',
+    `gameId ${before54d} -> ${after54d.g}；open=${after54d.open} state=${after54d.s}`);
+
+  /* T54e 主按钮直接开局 */
+  const pb54 = await page.evaluate(() => window.__fsm.helpBtnRects().primary);
+  await clickAt(page, ...center(pb54));
+  await wait(700);
+  const st54e = await page.evaluate(() => ({
+    s:window.__fsm.Game.state, open:window.__fsm.Help.open, g:window.__fsm.Game.gameId }));
+  rec('T54e', '说明页主按钮「开始玩」直接开局',
+    st54e.open === false && st54e.s === 'play' && st54e.g === 'acorn',
+    `open=${st54e.open} state=${st54e.s} gameId=${st54e.g}`);
+
+  /* T54f 卡片「?」：先看说明不开局，且不改动当前选中项 */
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
+  await wait(300);
+  const want54f = await page.evaluate(() => window.__fsm.GAMES[5].id);
+  const q54 = await page.evaluate(() => window.__fsm.cardHelpRect(5));
+  await clickAt(page, ...center(q54));
+  await wait(320);
+  const st54f = await page.evaluate(() => {
+    const f = window.__fsm;
+    return { open:f.Help.open, from:f.Help.from, hid:f.Help.gameId, gid:f.Game.gameId,
+             title:f.helpTitle(f.Help.gameId) };
+  });
+  rec('T54f', '卡片右上角「?」能单独查看某一款的说明，且不改动当前选中项',
+    st54f.open === true && st54f.from === 'peek' && st54f.hid === want54f && st54f.gid === 'acorn',
+    `open=${st54f.open} from=${st54f.from} 说明=${st54f.title}；选中项仍为 ${st54f.gid}`);
+
+  /* T54g 看过的说明要记住（菜单圆钮变色靠它），Esc 能关面板 */
+  const seen54 = await page.evaluate(() => {
+    let raw = null; try { raw = JSON.parse(localStorage.getItem('fsm_help_seen') || '{}'); } catch (e) {}
+    return { seen:window.__fsm.helpSeen(window.__fsm.Help.gameId), raw:raw && raw.rhythm };
+  });
+  await page.keyboard.press('Escape');
+  await wait(260);
+  const st54g = await page.evaluate(() => ({ open:window.__fsm.Help.open, s:window.__fsm.Game.state }));
+  rec('T54g', '看过的说明被记住（落 localStorage），Esc 能关掉面板',
+    seen54.seen === true && seen54.raw === 1 && st54g.open === false,
+    `seen=${seen54.seen} localStorage.rhythm=${JSON.stringify(seen54.raw)} Esc 后面板=${st54g.open}`);
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await wait(400);
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; });
+  await wait(200);
+
+  /* T54h 竖屏：点卡片右边缘的偏下位置，必须是「选中卡片」而不是「打开说明」。
+     曾经竖屏的圆钮放在右侧垂直居中，热区被补到 44 CSS 像素后正好罩住
+     卡片右侧中段 —— 孩子想选游戏、手指落在卡片右边，弹出来的却是说明页。
+     卡片是主操作、「?」是次操作，这个优先级反了就等于"动不动就弹说明"。
+     探针取 75% 高度：旧布局的判定区到 78% 高（会命中），新布局到 47%（不会）。 */
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+  await wait(650);
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; window.__fsm.selectGame('acorn'); });
+  await wait(320);
+  const c54h = await page.evaluate(() => window.__fsm.cardRect(3));
+  await clickAt(page, c54h.x + c54h.w - 14, c54h.y + c54h.h * 0.75);
+  await wait(300);
+  const r54h = await page.evaluate(() => ({
+    open:window.__fsm.Help.open, g:window.__fsm.Game.gameId }));
+  rec('T54h', '竖屏：点卡片右侧偏下 = 选中卡片（不会被「?」热区抢走）',
+    r54h.open === false && r54h.g === 'whack',
+    `说明页=${r54h.open} 选中=${r54h.g}（应为 whack）`);
+
+  /* T54i 圆钮热区必须守在卡片右上角，不许往下蔓延。
+     光看面积占比抓不到这个 bug（旧布局也只吃掉 8% 面积），
+     要看的是形状：判定区的下边界到卡片高度的百分之多少。 */
+  const geoHit = () => page.evaluate(() => {
+    const f = window.__fsm, c = f.cardRect(0), h = f.cardHelpHitRect(0);
+    return { bottomPct:+((h.y + h.h - c.y) / c.h).toFixed(2),
+             hitH:Math.round(h.h), dot:Math.round(f.cardHelpRect(0).w) };
+  });
+  const geo54iP = await geoHit();          /* 当前是竖屏 390×844 */
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await wait(450);
+  const geo54iL = await geoHit();
+  rec('T54i', '圆钮热区守在卡片右上角：下边界不超过卡片高度的 60%',
+    geo54iP.bottomPct <= 0.6 && geo54iL.bottomPct <= 0.6,
+    `竖屏 ${geo54iP.bottomPct}（热区 ${geo54iP.hitH}/圆钮 ${geo54iP.dot}） · ` +
+    `横屏 ${geo54iL.bottomPct}（热区 ${geo54iL.hitH}）`);
+
+  await page.evaluate(() => { window.__fsm.Game.state = 'menu'; });
+  await wait(200);
 
   /* ---- T27 菜单页"放学跑酷"跳转按钮存在且可点 ----
      放在最后：这个用例会 window.open 打开新标签页，

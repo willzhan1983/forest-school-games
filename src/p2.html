@@ -601,6 +601,9 @@ function drawMenu(){
     roundRect(r.x, r.y, r.w, r.h, 16); ctx.stroke();
 
     var cx = r.x + r.w / 2;
+    /* 卡片右上角（竖屏在右侧居中）画「?」：每款游戏各自的玩法说明入口。
+       画在卡片内容之上，也排在卡片命中判定之前 —— 两者区域重叠。 */
+    drawCardHelp(i);
     if(VIEW.portrait){
       /* 竖屏：横排布局——左角色，右文字（左对齐）。
          行位按卡片高度自适应：卡片高度是跟着游戏数量算的（见 cardMetrics），
@@ -659,6 +662,7 @@ function drawMenu(){
         ctx.fillText(g.tip, tx + 4, yTip + hTip / 2);
         ctx.textBaseline = 'alphabetic';
       }
+      drawCardHelp(i);
       continue;
     }
 
@@ -696,6 +700,7 @@ function drawMenu(){
       ctx.font = '400 ' + cardFont(11, 10, sc) + 'px system-ui,sans-serif';
       ctx.fillText(g.tip, cx, r.y + 219);
     }
+    drawCardHelp(i);
   }
 
   /* 档位选择器：接橡果/打地鼠是三档难度，翻牌是棋盘尺寸，拼图是拼图尺寸 */

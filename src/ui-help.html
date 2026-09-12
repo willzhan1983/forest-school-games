@@ -1,0 +1,398 @@
+
+/* ============================================================
+ * 10. 玩法说明面板
+ * ------------------------------------------------------------
+ * 为什么不是"卡片上多写一行小字"：卡片选中时的 tip 只有 12px 一行，
+ * 6 个游戏时卡片高 102px，那行提示条最多 30px 高。而孩子第一次玩
+ * 真正需要知道的是三件事 ——「我该做什么」「什么算赢」「什么会扣分」，
+ * 一行字塞不下，全藏着只会让孩子在第一次失败后才知道规则。
+ *
+ * 所以做成一张覆盖式说明卡，每款游戏五块固定内容：
+ *   目标 / 怎么玩 / 怎么得分 / 要小心 / 小诀窍
+ *
+ * 三个入口，主入口是「开始页面」：
+ *   ① 菜单点「开始游戏」→ 先弹出这一页说明，读完再点「开始玩」才进游戏。
+ *      这是主入口：孩子第一次玩最需要规则的那一刻，恰好就是他按下开始的那一刻；
+ *      藏在卡片角落的小「?」他多半不会去点。代价是熟练后每次多一次点击 ——
+ *      值得，多一次点击远好过"打到第三局才知道踩到蘑菇会扣命"。
+ *      注意这里**不是"只显示一次"**：本局用哪个难度会写进标题（简单和困难的
+ *      规则真的不同），而难度是随时可切的，只在第一次显示反而会给出错的规则。
+ *   ② 菜单卡片右上角的圆形「?」—— 不想开局、只想先看看某个游戏怎么玩时用。
+ *      没读过是橙色实心，读过变白底绿字（不做闪烁动画：菜单有像素级冒烟测试，
+ *      会动的元素会让"卡片都画出来了"这类断言随机失败）
+ *   局内**不设**入口：右上角是得分、左上角是返回键，窄屏下再塞一个，
+ *   三家热区被撑到 44px 后必互相咬到（点返回点到帮助）。忘了规则点返回
+ *   回菜单，菜单上还有「?」。（p4 主循环里"面板打开即暂停"的判断保留着，
+ *   万一以后加了局内入口，不会出现"一边看说明一边掉橡果"。）
+ *
+ * 文案全部集中在下面的 HELP 表。加新游戏必须一并加说明 ——
+ * tests/test.js 的 T54 会断言「GAMES 里每个 id 都能在 HELP 里找到 5 块内容」。
+ * ========================================================== */
+
+var HELP_ORDER = ['goal', 'how', 'score', 'watch', 'tip'];
+var HELP_LABEL = { goal:'目标', how:'怎么玩', score:'怎么得分', watch:'要小心', tip:'小诀窍' };
+/* 每块一个颜色：色条 + 标签同色，孩子扫一眼就能定位到想找的那块 */
+var HELP_COLOR = { goal:'#4caf6d', how:'#4a90d9', score:'#d8952a', watch:'#d9534f', tip:'#9b6bd6' };
+
+/* who 决定面板左侧画哪只角色：'cat'=Fuzzy / 'owl'=Doodle（涂涂）/ 'both'=两只 */
+var HELP = {
+  acorn: {
+    who:'owl',
+    goal:'帮涂涂接住树上掉下来的橡果',
+    how:'手指按住屏幕左右拖动，也可以用键盘的方向键',
+    score:'接住一个 +10 分，连着接住每次多 +3，最多 +50',
+    watch:'接到毛毛虫或毒蘑菇会扣分，还会少一条命；三条命用完、或时间到，本局结束',
+    tip:'漏掉橡果只断连击、不扣命 —— 躲开坏的比多接更重要'
+  },
+  memory: {
+    who:'both',
+    goal:'把一样的图案两两配对，全部配完',
+    how:'点一张翻开，再点一张；两张一样就算配对成功',
+    score:'全部配完就是满分，每多翻一次扣 6 分',
+    watch:'翻开没配上的牌会盖回去，得靠记性记住它在哪',
+    tip:'一次配对成功不扣分；配错一次等于多翻两张，一共扣 12 分'
+  },
+  spot: {
+    who:'both',
+    goal:'在左右两幅图里找出所有不一样的地方',
+    how:'看到哪里不同就直接点它，左右两边都能点',
+    score:'找对一处 +120 分；全部找齐后，剩下的机会每次再加 150 分',
+    watch:'点错要扣 40 分，还少一次机会；困难档只有 75 秒',
+    tip:'宁可慢一点看仔细 —— 点错一次，扣掉的分抵得上找对三处的零头'
+  },
+  whack: {
+    who:'cat',
+    goal:'45 秒里打中冒出头的小动物',
+    how:'小动物一冒头就点它',
+    score:'打中 +10 分，连中三次倍率涨一级，最高 ×5（一次 +50）',
+    watch:'打到毛毛虫或毒蘑菇要扣分，连击也会清零',
+    tip:'没打中不算失误、只是断了连击 —— 别乱点，打错更亏'
+  },
+  puzzle: {
+    who:'owl',
+    goal:'把打乱的图片拼回原来的样子',
+    how:'点第一块，再点第二块，两块就会交换位置',
+    score:'拼完就是满分；比最少步数多走一步，扣 10~14 分',
+    watch:'点同一块是取消选择，不会算一步',
+    tip:'每块左上角有数字，按 1、2、3… 的顺序排；旁边小图是完整原图'
+  },
+  rhythm: {
+    who:'cat',
+    goal:'跟着鼓点，在圆环缩到最小的那一刻点它',
+    how:'圆环出现后点它，一拍只点一下',
+    score:'正好卡上拍点「完美 +30」，差一点点「良好 +15」',
+    watch:'漏掉一拍只断连击，不扣分',
+    tip:'不用一直点 —— 盯住圆环收到最小的那一瞬间再按'
+  }
+};
+
+/* 「已读过」标记按游戏分开存。只用来给菜单圆钮换颜色，
+   丢了也不影响功能，所以读写全部 try 包住。 */
+var HELP_SEEN_KEY = 'fsm_help_seen';
+var Help = { open:false, gameId:'', from:'menu', seen:{} };
+try{
+  var _hs = JSON.parse(localStorage.getItem(HELP_SEEN_KEY) || '{}');
+  if(_hs && typeof _hs === 'object') Help.seen = _hs;
+}catch(e){ Help.seen = {}; }
+
+function helpSeen(id){ return !!Help.seen[id]; }
+function markHelpSeen(id){
+  Help.seen[id] = 1;
+  try{ localStorage.setItem(HELP_SEEN_KEY, JSON.stringify(Help.seen)); }catch(e){}
+}
+function helpData(id){ return HELP[id] || null; }
+/* 给读屏和测试用的一句话摘要 */
+function helpSummary(id){
+  var h = helpData(id);
+  if(!h) return '';
+  var out = [];
+  for(var i = 0; i < HELP_ORDER.length; i++){
+    if(h[HELP_ORDER[i]]) out.push(HELP_LABEL[HELP_ORDER[i]] + '：' + h[HELP_ORDER[i]]);
+  }
+  return out.join('。');
+}
+
+/* ---------- 中文按字断行 ----------
+   canvas 没有自动换行。中文没有词边界，逐字测宽是最省事也最稳的做法：
+   一整段文案里混着中文、数字和箭头「←」，按词断反而会出现
+   一行只剩一个标点的尴尬情况。 */
+function wrapText(text, maxW, font){
+  ctx.save();
+  ctx.font = font;
+  var lines = [], line = '';
+  for(var i = 0; i < text.length; i++){
+    var ch = text.charAt(i);
+    if(line && ctx.measureText(line + ch).width > maxW){ lines.push(line); line = ch; }
+    else line += ch;
+  }
+  if(line) lines.push(line);
+  ctx.restore();
+  return lines;
+}
+
+/* ---------- 布局 ----------
+   横屏 960×540：面板宽、左侧留出立绘位，文字分两列排（左图右文）。
+   竖屏 540×960：面板窄、立绘缩成标题旁的小图，文字占满宽度。
+   高度由内容行数算出来，不写死 —— 改文案不用回来调坐标。 */
+function helpMetrics(){
+  var portrait = VIEW.portrait;
+  var m = { portrait:portrait };
+  if(portrait){
+    m.w = Math.min(W - 36, 484);
+    m.bodyW = m.w - 48;
+    m.titleFont = '600 24px system-ui,sans-serif';
+    m.labelFont = '600 14px system-ui,sans-serif';
+    m.bodyFont = '400 17px system-ui,sans-serif';
+    m.lineH = 26; m.labelH = 22; m.blockGap = 12;
+    m.titleH = 62; m.btnH = 60; m.padV = 20;
+    m.charW = 72; m.charH = 76;
+  }else{
+    m.w = Math.min(W - 120, 800);
+    m.bodyW = m.w - 250;
+    m.titleFont = '600 26px system-ui,sans-serif';
+    m.labelFont = '600 14px system-ui,sans-serif';
+    m.bodyFont = '400 17px system-ui,sans-serif';
+    m.lineH = 25; m.labelH = 21; m.blockGap = 11;
+    m.titleH = 58; m.btnH = 58; m.padV = 18;
+    m.charW = 150; m.charH = 170;
+  }
+  m.x = (W - m.w) / 2;
+  return m;
+}
+
+/* 把一段段文字排成「标签行 + 内容行」，并算出面板总高 */
+function helpBlocks(id){
+  var h = helpData(id);
+  if(!h) return [];
+  var m = helpMetrics();
+  var blocks = [];
+  for(var i = 0; i < HELP_ORDER.length; i++){
+    var key = HELP_ORDER[i];
+    if(!h[key]) continue;
+    var lines = wrapText(h[key], m.bodyW, m.bodyFont);
+    blocks.push({ key:key, label:HELP_LABEL[key], color:HELP_COLOR[key], lines:lines });
+  }
+  return blocks;
+}
+
+/* 内容总高。单独算而不是让 helpBlocks 写回 m.contentH ——
+   helpBlocks 内部自己 new 了一个 metrics 对象，写回去也传不出来。 */
+function helpContentH(blocks){
+  var m = helpMetrics(), total = 0;
+  for(var i = 0; i < blocks.length; i++){
+    total += m.labelH + blocks[i].lines.length * m.lineH + m.blockGap;
+  }
+  return total;
+}
+
+/* 面板矩形（含由内容算出的高度），主循环每帧都调，纯计算 */
+function helpPanel(){
+  var m = helpMetrics();
+  var blocks = helpBlocks(Help.gameId);
+  var h = m.padV + m.titleH + helpContentH(blocks) + m.btnH + m.padV + 18;
+  h = Math.min(h, H - 24);
+  var y = Math.max(12, (H - h) / 2);
+  return { x:m.x, y:y, w:m.w, h:h };
+}
+
+/* 底部两个按钮：左主按钮，右「关闭」。
+   从开始页面 / 卡片「?」进来时主按钮是「开始玩」—— 看完直接开局，
+   不用退回去再点一次「开始游戏」；从局内进来时是「继续玩」，只关面板。 */
+function helpBtnRects(){
+  var m = helpMetrics(), p = helpPanel();
+  var gap = 18;
+  var bw = Math.min(230, (p.w - 56 - gap) / 2), bh = m.btnH;
+  var x0 = p.x + (p.w - (bw * 2 + gap)) / 2;
+  var y = p.y + p.h - m.padV - bh;
+  return { primary:{ x:x0, y:y, w:bw, h:bh },
+           second: { x:x0 + bw + gap, y:y, w:bw, h:bh } };
+}
+function helpPrimaryText(){ return (Help.from === 'play') ? '继 续 玩' : '开 始 玩'; }
+
+/* 菜单卡片右上角的圆形「?」。横竖屏都放在右上角 —— 位置统一，
+   孩子记住"问号永远在卡片右上角"就够了。
+   曾经竖屏是"右侧垂直居中"：位置看着平衡，但把卡片右侧中间那条
+   完整地让给了「?」，孩子想选游戏、手指落在卡片右半边，弹出来的是说明。 */
+function cardHelpRect(i){
+  var r = cardRect(i);
+  var d;
+  if(VIEW.portrait){
+    d = clamp(r.h * 0.30, 26, 38);
+    return { x:r.x + r.w - d - 12, y:r.y + 9, w:d, h:d };
+  }
+  /* 横屏卡片只有 133px 宽（6 个游戏时），圆钮压到右上角的圆角里会难看，
+     所以尺寸上限收到 32。 */
+  d = clamp(Math.min(r.w, r.h) * 0.24, 24, 32);
+  return { x:r.x + r.w - d - 9, y:r.y + 9, w:d, h:d };
+}
+
+/* 卡片上「?」的命中区。不能直接用 padRect(r, 44)：
+   44 CSS 像素在手机上要放成约 60 逻辑像素，而卡片本身横屏只有 133 宽、
+   竖屏只有 102 高 —— 于是「?」的判定区会吃掉卡片右侧 42% 宽 / 55~60% 高。
+   菜单里点「?」的判定排在卡片之前（两者区域重叠，只能二选一），
+   结果是"想选游戏却点到说明"：卡片是主操作、「?」是次操作，主操作不该输。
+   折中：膨胀上限收到 1.5 倍视觉直径 —— 手指仍点得中，但不越出"右上角"这个语义。 */
+function cardHelpHitRect(i){
+  var d = cardHelpRect(i);
+  var cap = Math.max(d.w, d.h) * 1.5;          /* 逻辑坐标下的目标边长 */
+  return padRect(d, cap * VIEW.s);             /* padRect 的入参是 CSS 像素 */
+}
+/* 圆形按钮本体。seen=true 是"读过了"的样式。 */
+function drawHelpDot(r, seen, ring){
+  var cx = r.x + r.w / 2, cy = r.y + r.h / 2, rad = Math.min(r.w, r.h) / 2;
+  ctx.save();
+  ctx.fillStyle = seen ? 'rgba(255,255,255,.94)' : '#f2a03c';
+  ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = seen ? 'rgba(60,80,70,.38)' : '#c9761b';
+  ctx.lineWidth = seen ? 2 : 2.5;
+  ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = seen ? '#3c6b4c' : '#ffffff';
+  ctx.font = '700 ' + Math.round(rad * 1.25) + 'px system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('?', cx, cy + rad * 0.05);
+  ctx.restore();
+  if(ring && hoverRect(r)) hoverRing(r, Math.round(rad));
+}
+function drawCardHelp(i){ drawHelpDot(cardHelpRect(i), helpSeen(GAMES[i].id), false); }
+
+/* ---------- 开 / 关 ---------- */
+/* from 三种：
+     'start' —— 开始页面（菜单点「开始游戏」进来），主入口
+     'peek'  —— 卡片右上角「?」，只想先看看，看完想玩可以顺手开局
+     'play'  —— 局内「?」，主按钮只关面板，不打断这一局 */
+function openHelp(id, from){
+  if(!helpData(id)) return false;
+  Help.open = true; Help.gameId = id;
+  Help.from = from || (Game.state === 'play' ? 'play' : 'start');
+  markHelpSeen(id);
+  return true;
+}
+/* 开始页面入口：菜单点「开始游戏」走这里 */
+function startHelp(){ return openHelp(Game.gameId, 'start'); }
+function closeHelp(){ Help.open = false; }
+/* 主按钮：从局内进来 = 只关面板（回到暂停中的那一局）；其余 = 关掉面板并开局。
+   'peek' 要先切到说明所属的那个游戏 —— 不切的话，在 A 的卡片上点「?」
+   看完点「开始玩」，开出来的是菜单里选中的 B。 */
+function helpConfirm(){
+  var from = Help.from, id = Help.gameId;
+  closeHelp();
+  if(from === 'play') return;
+  if(from === 'peek' && Game.gameId !== id) selectGame(id);
+  startCurrent();
+}
+
+/* 面板打开时的点击处理。返回 true 表示事件已被吃掉。
+   面板内部非按钮区域也要吞掉 —— 否则点在说明文字上会穿透到下面的卡片，
+   孩子一边读一边把游戏给换了。 */
+function helpTap(x, y){
+  var b = helpBtnRects();
+  var p = helpPanel();
+  if(hitRect(x, y, padRect(b.primary))){ Audio2.click(); helpConfirm(); return true; }
+  if(hitRect(x, y, padRect(b.second))){ Audio2.click(); closeHelp(); return true; }
+  if(!hitRect(x, y, p)){ Audio2.click(); closeHelp(); return true; }
+  return true;
+}
+
+/* ---------- 绘制 ---------- */
+function drawHelp(){
+  var h = helpData(Help.gameId);
+  if(!h) return;
+  var m = helpMetrics(), blocks = helpBlocks(Help.gameId), p = helpPanel();
+
+  ctx.fillStyle = 'rgba(16,30,22,.58)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = 'rgba(255,255,255,.97)';
+  roundRect(p.x, p.y, p.w, p.h, 20); ctx.fill();
+  ctx.strokeStyle = 'rgba(60,80,70,.22)'; ctx.lineWidth = 2;
+  roundRect(p.x, p.y, p.w, p.h, 20); ctx.stroke();
+
+  var titleY = p.y + m.padV + 10;
+
+  /* 竖屏：立绘缩成标题左侧的小图，文字区占满整宽 */
+  if(m.portrait){
+    var chr = { x:p.x + 18, y:titleY - 6, w:m.charW, h:m.charH };
+    drawHelpChars(h.who, chr.x + chr.w / 2, chr.y + chr.h / 2 - 4, chr.h * 0.52);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = '#1f4d2e';
+    ctx.font = m.titleFont;
+    ctx.fillText(helpTitle(Help.gameId), chr.x + chr.w + 12, titleY + 26);
+  }else{
+    /* 横屏：左侧立绘整条垂直居中，右侧标题 + 内容 */
+    var cxc = p.x + 30 + m.charW / 2;
+    var cyc = p.y + p.h / 2 + 6;
+    drawHelpChars(h.who, cxc, cyc, m.charH * 0.62);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = '#1f4d2e';
+    ctx.font = m.titleFont;
+    ctx.fillText(helpTitle(Help.gameId), p.x + 210, titleY + 22);
+  }
+
+  var tx = m.portrait ? (p.x + 24) : (p.x + 210);
+  var y = p.y + m.padV + m.titleH;
+  for(var i = 0; i < blocks.length; i++){
+    var b = blocks[i];
+    /* 色条 + 标签 */
+    ctx.fillStyle = b.color;
+    roundRect(tx, y + 4, 4, m.labelH - 8, 2); ctx.fill();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.font = m.labelFont;
+    ctx.fillStyle = b.color;
+    ctx.fillText(b.label, tx + 12, y + m.labelH / 2);
+    y += m.labelH;
+    ctx.font = m.bodyFont;
+    ctx.fillStyle = '#2a3b31';
+    for(var L = 0; L < b.lines.length; L++){
+      ctx.textBaseline = 'middle';
+      ctx.fillText(b.lines[L], tx, y + m.lineH / 2);
+      y += m.lineH;
+    }
+    y += m.blockGap;
+  }
+
+  var br = helpBtnRects();
+  drawButton(br.primary, helpPrimaryText(), '#4caf6d', '#ffffff');
+  drawButton(br.second, '关 闭', '#5b8fa8', '#ffffff');
+}
+
+/* 面板标题：游戏名 + 当前档位名。
+   档位名一起写出来，是因为「简单」和「困难」的规则确实不同
+   （找不同点了错扣几次机会、拼图罚多少分都不一样），
+   孩子得知道自己在看哪一档的说明。 */
+function helpTitle(id){
+  var name = id;
+  for(var i = 0; i < GAMES.length; i++) if(GAMES[i].id === id) name = GAMES[i].name;
+  var d = Game.diffs[id] || Game.diff;
+  var dn = '';
+  var list = null;
+  for(var j = 0; j < GAMES.length; j++) if(GAMES[j].id === id) list = optsList(GAMES[j]);
+  if(list){
+    for(var k = 0; k < list.length; k++){
+      if(list[k].id === d){ dn = list[k].name; break; }
+    }
+  }
+  return dn ? (name + '  ·  ' + dn) : name;
+}
+
+/* 面板上的角色：'both' 上下/左右摆两只，单角色放中间 */
+function drawHelpChars(who, cx, cy, h){
+  if(who === 'both'){
+    drawRN('fz_idle', cx, cy - h * 0.52, h * 0.92) || drawFallbackCat(cx - h * 0.3, cy - h, h * 0.6, h * 0.6);
+    drawRN('dd_idle', cx, cy + h * 0.52, h * 0.92) || drawFallbackOwl(cx - h * 0.3, cy, h * 0.6, h * 0.6);
+  }else if(who === 'cat'){
+    if(!drawRN('fz_idle', cx, cy, h * 1.15)) drawFallbackCat(cx - h * 0.42, cy - h * 0.5, h * 0.84, h * 0.9);
+  }else{
+    if(!drawRN('dd_idle', cx, cy, h * 1.15)) drawFallbackOwl(cx - h * 0.42, cy - h * 0.5, h * 0.84, h * 0.9);
+  }
+}
+
+window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
+  Help:Help, HELP:HELP, HELP_ORDER:HELP_ORDER, HELP_LABEL:HELP_LABEL,
+  helpData:helpData, helpSeen:helpSeen, helpSummary:helpSummary,
+  openHelp:openHelp, startHelp:startHelp, closeHelp:closeHelp,
+  helpConfirm:helpConfirm, helpTap:helpTap,
+  helpMetrics:helpMetrics, helpBlocks:helpBlocks, helpPanel:helpPanel,
+  helpBtnRects:helpBtnRects, helpPrimaryText:helpPrimaryText, helpTitle:helpTitle,
+  cardHelpRect:cardHelpRect, cardHelpHitRect:cardHelpHitRect, drawHelp:drawHelp,
+  wrapText:wrapText
+});
