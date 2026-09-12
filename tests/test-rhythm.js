@@ -263,6 +263,35 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
   await wait(200);
 
+  /* ---- R10 回归：漏掉一拍后游戏不锁死 ----
+     真实时间等第一拍自然漏掉（1.2s 拍点 + 0.3s 判定窗），
+     断言 active 被释放、第二拍仍能出环并命中。
+     这是上线首日玩家必踩的路径：开局没准备好 → 漏第一拍。 */
+  await page.evaluate(() => {
+    window.__fsm.Game.state = 'menu';
+    window.__fsm.selectGame('rhythm');
+    window.__fsm.selectDiff('easy');
+    window.__fsm.startCurrent();
+  });
+  await wait(2100);   /* 第一拍 t=1.2s 已漏（1.5s 判定窗），第二拍 t=1.95s 也已漏，第三拍 t=2.7s 未到 */
+  const r10a = await page.evaluate(() => {
+    const f = window.__fsm, R = f.Rhythm;
+    return { b0Missed: R.beats[0].judged && R.beats[0].missed, activeReleased: R.active === null || !R.active.judged };
+  });
+  /* 第三拍 t=2.7s：把 el 推到拍点瞬间，直接命中 */
+  const r10b = await page.evaluate(() => {
+    const f = window.__fsm, R = f.Rhythm;
+    const b2 = R.beats[2];
+    if (b2.judged) return { perfect: -1, b1Judged: false, skip: true };
+    R.el = b2.t; R.active = b2;
+    const r = f.rhythmBoard();
+    f.rhythmTap(r.cx, r.cy);
+    return { perfect: R.perfect, b1Judged: b2.judged && !b2.missed };
+  });
+  rec('R10', '节奏游戏：漏第一拍后 active 释放，第二拍仍可命中（不锁死）',
+    r10a.b0Missed && r10a.activeReleased && r10b.perfect >= 1 && r10b.b1Judged,
+    `b0Missed=${r10a.b0Missed} activeReleased=${r10a.activeReleased} b1Perfect=${r10b.perfect}`);
+
   /* ---- R9 零运行时错误 ---- */
   rec('R9', '节奏游戏全程零运行时错误', errs.length === 0, errs.slice(0, 2).join(' | ') || '0 error');
 

@@ -90,6 +90,28 @@ function endGame(score, extra){
   if(resultInfo.isNew) Audio2.win(); else Audio2.over();
 }
 
+/* 结算心情：新纪录 = 开心；接近自己的最好成绩 = 笑眯眯；差得远 = 委屈/发呆。
+   「最高分」那行小字孩子基本不看，但猫头鹰是笑还是哭一眼就懂。 */
+function resultMood(){
+  var best = Game.best[bestKey(Game.gameId)] || 0;
+  if(resultInfo.isNew) return 'happy';
+  if(best > 0 && Game.score >= best * 0.7) return 'smile';
+  return 'daze';
+}
+/* 站在面板左上角、半个身子压在边上，右上角顶一个表情气泡。
+   每个游戏用自己卡片上的那只（who:'both' 的两只都上）。 */
+function drawResultChar(){
+  var who = gameWho();
+  var mood = resultMood();
+  var names = (who === 'both') ? ['fz', 'dd'] : [(who === 'cat' ? 'fz' : 'dd')];
+  var bx0 = W/2 - 236, by = 100;
+  for(var i = 0; i < names.length; i++){
+    var bx = bx0 + i * 50;
+    if(!drawCharH(names[i] + '_front', bx, by, 92)) continue;
+    drawEmote(faceName(names[i], mood), bx + 30, by - 34, 52);
+  }
+}
+
 function drawResult(){
   drawBackdrop(Game.time * 60, 0);
   ctx.fillStyle = 'rgba(255,255,255,.82)';
@@ -120,6 +142,8 @@ function drawResult(){
     ctx.font = '400 14px system-ui,sans-serif';
     ctx.fillText(resultInfo.extra, W/2, 272);
   }
+
+  drawResultChar();
 
   drawButton(againRect(), '再 来 一 次', '#4caf6d', '#ffffff');
   drawButton(homeRect(), '换 个 游 戏', '#5b8fa8', '#ffffff');
@@ -271,7 +295,7 @@ function updateAcorn(dt){
       var gain = 10 + Math.min(40, (Acorn.combo - 1) * 3);
       Game.score += gain;
       Audio2.good(Acorn.combo);
-      Acorn.catchFx.push({ x:n.x, y:owlY - 10, life:26, txt:'+' + gain, bad:false });
+      Acorn.catchFx.push({ x:n.x, y:owlY - 10, life:26, txt:'+' + gain, bad:false, face:'dd_happy' });
       continue;
     }
     if(caught){
@@ -284,7 +308,7 @@ function updateAcorn(dt){
       Acorn.lives--;
       Acorn.hurt = 26;
       Audio2.bad();
-      Acorn.catchFx.push({ x:n.x, y:owlY - 10, life:32, txt:'-' + lost, bad:true });
+      Acorn.catchFx.push({ x:n.x, y:owlY - 10, life:32, txt:'-' + lost, bad:true, face:'dd_wow' });
       if(Acorn.lives <= 0){
         endGame(Game.score, acornExtra());
         return;
@@ -384,30 +408,33 @@ function drawAcorn(){
     }
   }
 
-  /* 涂涂（滑翔姿态） */
+  /* 涂涂（滑翔姿态）。用跑酷官方素材里的 glide 帧 —— 有翅膀有冲角，
+     比设定图侧视图更像「在飞」。往左飞时水平镜像，不然会倒着飞。
+     缺图退回设定图侧视图，再缺才用矢量兜底。 */
   var oy = owlY + Math.sin(Game.time * 4) * 3;
+  var faceLeft = Acorn.owlVx < -0.4;
   ctx.save();
   var tilt = clamp(Acorn.owlVx * 0.02, -0.28, 0.28);
-  ctx.translate(Acorn.owlX, oy); ctx.rotate(tilt);
+  ctx.translate(Acorn.owlX, oy); ctx.rotate(faceLeft ? -tilt : tilt);
   if(Acorn.hurt > 0){ ctx.globalAlpha = 0.45 + Math.sin(Game.time * 40) * 0.3; }
-  var flap = Math.sin(Game.time * 6) * 8;
-  if(!drawCharImg(OWL_IMG, -52, -58 - flap * 0.2, 104, 108)) drawFallbackOwl(-52, -58, 104, 108);
-  /* 翅膀 */
-  ctx.fillStyle = 'rgba(242,185,60,.85)';
-  ctx.beginPath(); ctx.ellipse(-46, -18, 22, 11, -0.5 - flap * 0.03, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(46, -18, 22, 11, 0.5 + flap * 0.03, 0, Math.PI * 2); ctx.fill();
+  var flap = Math.sin(Game.time * 6) * 4;
+  if(!drawRN('dd_glide', 0, -4 + flap * 0.4, 108, faceLeft) &&
+     !drawCharH('dd_side', 0, -4 + flap * 0.4, 108, faceLeft)) drawFallbackOwl(-52, -58, 104, 108);
   ctx.restore();
   ctx.globalAlpha = 1;
 
-  /* 飘字。扣分是红的、字号也大一号 —— 接错了要一眼看到后果 */
+  /* 飘字 + 表情。接到好橡果冒 Doodle 的开心脸，接到坏东西冒惊讶脸 ——
+     文字是给认字的孩子看的，脸是给还不认字的那个看的。 */
   for(var f = 0; f < Acorn.catchFx.length; f++){
     var fx = Acorn.catchFx[f];
     var lf = fx.bad ? 32 : 26;
-    ctx.globalAlpha = clamp(fx.life / lf, 0, 1);
+    var alpha = clamp(fx.life / lf, 0, 1);
+    ctx.globalAlpha = alpha;
     ctx.fillStyle = fx.bad ? '#c0392b' : '#1f4d2e';
     ctx.font = '500 ' + (fx.bad ? 21 : 18) + 'px system-ui,sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(fx.txt, fx.x, fx.y);
+    if(fx.face) drawEmote(fx.face, fx.x, fx.y - 34, 42, alpha);
     ctx.globalAlpha = 1;
   }
 
@@ -485,17 +512,35 @@ for (var _ai = 0; _ai < ANIMAL_SRC.length; _ai++) {
   ANIMAL_IMG[_ai] = new Image();
   ANIMAL_IMG[_ai].src = ANIMAL_SRC[_ai];
 }
+/* 配对池里排在 12 只小动物后面的 6 张官方 IP 角色卡（Fuzzy / Doodle 三视图）。
+   索引 k = 12..17 依次对应下面这张表 —— 加角色只要往后追加。
+   牌背图案不跟 k 走（见 backPat），所以多几张角色牌不会变成「看背面猜牌」。 */
+var CHAR_CARDS = ['fz_front', 'fz_side', 'fz_back', 'dd_front', 'dd_side', 'dd_back'];
+/* 再往后是跑酷官方素材卡：5 个道具图标 + 10 张角色动作帧。
+   动作帧当牌面比静态三视图好玩 —— 一眼能认出「这是跑酷里跳起来那下」。
+   索引 k = 18..32 依次对应下面这张表，加卡只要往后追加。 */
+var RN_CARDS = [
+  'it_acorn', 'it_book', 'it_double', 'it_magnet', 'it_shield',
+  'fz_idle', 'fz_win', 'fz_jump', 'fz_run02', 'fz_slide',
+  'dd_idle', 'dd_win', 'dd_glide', 'dd_jump', 'dd_run02'
+];
+var DECK_KINDS = ANIMAL_SRC.length + CHAR_CARDS.length + RN_CARDS.length;   /* 一副牌里一共有几种图案 */
 /* 暴露给测试：代码整体在 IIFE 里，外面拿不到 ANIMAL_IMG。
    用 Object.assign 而不是直接赋值 —— g-spot 也要往这里挂东西，直接赋值会互相覆盖。
    p4 启动时会把 __fsmExtras 并进 window.__fsm。 */
 window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
   ANIMAL_IMG: ANIMAL_IMG,
   ANIMAL_SRC: ANIMAL_SRC,
+  CHAR_CARDS: CHAR_CARDS,
+  RN_CARDS: RN_CARDS,
+  DECK_KINDS: DECK_KINDS,
   /* T24 要直接读当前难度的 maxNuts（同时屏最多几个掉落物）来证三档梯度。
      暴露 ACORN_CFG 后，测试不用进 play 等 400ms 后才数 nuts.length，
      直接读 cfg 即可，稳。 */
   ACORN_CFG: ACORN_CFG
 });
+/* 动物脸的矢量兜底描述。角色卡（k >= 12）没有矢量版：
+   位图缺失时退回第一只小动物，不会开天窗。 */
 var ANIMALS = [
   { fur:'#e9e9ef', ear:'pointy', eye:'#5ec2f0', nose:'#f2909f' },
   { fur:'#ffd45e', ear:'none',   eye:'#ffffff', beak:true },
@@ -511,6 +556,21 @@ var ANIMALS = [
   { fur:'#a9713f', ear:'round',  eye:'#2f2a26', snout:true }
 ];
 function drawAnimalFace(cx, cy, s, k){
+  /* 官方素材卡（k >= 12）：12..17 是设定图三视图，18..32 是跑酷动作帧与道具。
+     没有矢量兜底 —— 素材没解码完就落到下面的小动物矢量脸，至少不是空白。
+     两者画法一致：按高度 74*s 对齐，宽度按各自宽高比推。 */
+  if(k >= ANIMAL_IMG.length && k < DECK_KINDS){
+    var ci = k - ANIMAL_IMG.length;
+    var cimg = (ci >= CHAR_CARDS.length)
+      ? RN_IMG[RN_CARDS[ci - CHAR_CARDS.length]]
+      : CH_IMG[CHAR_CARDS[ci]];
+    if(cimg && cimg.complete && cimg.naturalWidth > 0){
+      var ciw = 74 * s * (cimg.naturalWidth / cimg.naturalHeight);
+      ctx.drawImage(cimg, cx - ciw / 2, cy - 74 * s / 2, ciw, 74 * s);
+      return;
+    }
+    k = 0;
+  }
   var a = ANIMALS[k % ANIMALS.length];
   /* 位图优先，矢量脸降级为兜底。
      高度取 74*s：矢量版在 s 尺度下从耳朵尖(-48)到下巴(+30)一共 78 单位高，
@@ -664,19 +724,30 @@ function drawCardBack(pat, w, h){
   }
 }
 
-var Mem = { cards:[], cols:4, rows:3, cw:0, ch:0, x0:0, y0:0, first:-1, flips:0, matched:0, lockT:0, el:0 };
+var Mem = { cards:[], cols:4, rows:3, cw:0, ch:0, x0:0, y0:0, first:-1, flips:0, matched:0, lockT:0, el:0,
+            emote:null };
+var memEmoteFlip = false;
 
 function startMemory(){
   var c = gridCfg();
   Mem.cols = c.cols; Mem.rows = c.rows;
   var pairs = Math.floor(Mem.cols * Mem.rows / 2);
+  /* 从整副图案里随机抽 pairs 种，而不是永远用前 pairs 种 ——
+     不然 4×3（6 对）永远只出前 6 只小动物，新加的 6 张 Fuzzy/Doodle
+     角色卡只有 6×4 那一档才可能露面。洗牌后每种图案最多出现一次。 */
+  var pool = [];
+  for(var t = 0; t < DECK_KINDS; t++) pool.push(t);
+  for(var q = pool.length - 1; q > 0; q--){
+    var r2 = rndInt(0, q); var tmp = pool[q]; pool[q] = pool[r2]; pool[r2] = tmp;
+  }
   var deck = [];
-  for(var i = 0; i < pairs; i++){ deck.push(i); deck.push(i); }
+  for(var i = 0; i < pairs; i++){ deck.push(pool[i]); deck.push(pool[i]); }
   for(var s = deck.length - 1; s > 0; s--){
-    var j = rndInt(0, s); var t = deck[s]; deck[s] = deck[j]; deck[j] = t;
+    var j = rndInt(0, s); var t2 = deck[s]; deck[s] = deck[j]; deck[j] = t2;
   }
   Mem.cards = deck.map(function(k){ return { k:k, open:false, done:false, anim:0 }; });
   Mem.first = -1; Mem.flips = 0; Mem.matched = 0; Mem.lockT = 0; Mem.el = 0;
+  Mem.emote = null;
   /* 左右留白总量。原来 120，竖屏 6×4 的单卡只剩 60 逻辑宽 —— iPhone SE 竖屏
      实测 41.7 CSS px，低于 44px 的可点目标下限，小孩点不准。收到 80 后单卡
      66 逻辑宽（SE 竖屏 45.8px）刚过线。横屏不受影响：W=960 时各尺寸都撞
@@ -699,13 +770,22 @@ function memRect(i){
 }
 function updateMemory(dt){
   Mem.el += dt;
+  if(Mem.emote && (Mem.emote.t -= dt) <= 0) Mem.emote = null;
   if(Mem.lockT > 0){
     Mem.lockT -= dt;
     if(Mem.lockT <= 0){
       var a = Mem.cards[Mem.first], b = Mem.cards[Mem._second];
       if(a && b){
-        if(a.k === b.k){ a.done = true; b.done = true; Mem.matched += 2; Audio2.match(); }
-        else { a.open = false; b.open = false; }
+        if(a.k === b.k){
+          a.done = true; b.done = true; Mem.matched += 2; Audio2.match();
+          /* 配成一对：Fuzzy / Doodle 轮流冒开心脸（who:'both' 的游戏，两只都有戏份） */
+          Mem.emote = { name: faceName(memEmoteFlip ? 'cat' : 'owl', 'happy'), t: 48 };
+          memEmoteFlip = !memEmoteFlip;
+        }
+        else {
+          a.open = false; b.open = false;
+          Mem.emote = { name: faceName('owl', 'wow'), t: 48 };   /* 翻错了：惊讶脸 */
+        }
       }
       Mem.first = -1; Mem._second = -1;
       if(Mem.matched >= Mem.cards.length){
@@ -765,6 +845,11 @@ function drawMemory(){
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('已配对 ' + (Mem.matched / 2) + ' / ' + (Mem.cards.length / 2) +
                '    翻牌 ' + Mem.flips + ' 次', W / 2, 66);
+  /* 配对反馈：Fuzzy / Doodle 在旁边冒个表情脸，跳一下再淡出 */
+  if(Mem.emote){
+    var ea = clamp(Mem.emote.t / 48, 0, 1);
+    drawEmote(Mem.emote.name, W / 2 + 132, 64, 52 + (1 - ea) * 8, Math.min(1, ea * 2.2));
+  }
 }
 
 /* ============================================================

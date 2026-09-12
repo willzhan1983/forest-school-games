@@ -2,25 +2,163 @@
 /* ============================================================
  * 4. 角色立绘（base64 内联，带程序化兜底）
  * ========================================================== */
-var CAT_IMG = new Image(); CAT_IMG.src = 'data:image/png;base64,__CAT_B64__';
-var OWL_IMG = new Image(); OWL_IMG.src = 'data:image/png;base64,__OWL_B64__';
+/* 官方 IP《Fuzzy & Doodle》角色素材，由 tools/mkchar.js 从两张角色设定图里
+   切出来（三视图 + 表情脸），去背 + 羽化 + 调色板压缩后 base64 内联。
+   名字规则：fz_ / dd_ 前缀 + 部位。
+     *_front/_side/_back —— 全身三视图，用在立绘、关卡主角、拼图卡面
+     *_happy/_smile/_wow/_sad/_daze —— 表情脸，用在结算页和局内即时反馈
+   加素材只要把新图丢进 raw-items/fd-src 并在 mkchar.js 的 JOBS 里加一行，
+   占位符按 __<NAME>_B64__ 自动生成（见 merge.js）。 */
+var CH_B64 = {
+  fz_front:'__FZ_FRONT_B64__', fz_side:'__FZ_SIDE_B64__', fz_back:'__FZ_BACK_B64__',
+  dd_front:'__DD_FRONT_B64__', dd_side:'__DD_SIDE_B64__', dd_back:'__DD_BACK_B64__',
+  fz_happy:'__FZ_HAPPY_B64__', fz_smile:'__FZ_SMILE_B64__', fz_wow:'__FZ_WOW_B64__',
+  fz_sad:'__FZ_SAD_B64__',     fz_fish:'__FZ_FISH_B64__',
+  dd_happy:'__DD_HAPPY_B64__', dd_smile:'__DD_SMILE_B64__', dd_wow:'__DD_WOW_B64__',
+  dd_daze:'__DD_DAZE_B64__',   dd_apple:'__DD_APPLE_B64__'
+};
+var CH_IMG = {};
+for(var _ck in CH_B64){ if(!CH_B64.hasOwnProperty(_ck)) continue; CH_IMG[_ck] = new Image(); CH_IMG[_ck].src = 'data:image/png;base64,' + CH_B64[_ck]; }
+
+var CAT_IMG = CH_IMG.fz_front;   /* 菜单卡片里 who:'cat' 的立绘（下面会用跑酷官方动作帧覆盖） */
+var OWL_IMG = CH_IMG.dd_front;   /* 菜单卡片里 who:'owl' 的立绘 */
+
+/* ============================================================
+ * 4b. 跑酷游戏官方素材（forest-school-runner）
+ * ------------------------------------------------------------
+ * 由 tools/mkrunner.js 从跑酷项目 assets/ 转出：去透明边 + 调色板压缩。
+ *   fz_* —— Fuzzy（布偶猫）动作帧：idle/run01-04/jump/fall/land/slide/hurt/win/dash01-03
+ *   dd_* —— Doodle（猫头鹰）动作帧：同上去掉 dash、多一张 glide（滑翔）
+ *   it_* —— 道具图标：acorn/book/double/magnet/shield
+ *   bg_* —— 场景远景：forest/classroom/treehouse
+ * 用途：局内动作（跑/跳/滑/受伤/胜利）、翻牌与打地鼠的卡面池、
+ *       接橡果的掉落物与滑翔姿态、拼图/找不同的场景底图。
+ * 加素材：把新图丢进跑酷项目对应目录 + 在 tools/mkrunner.js 名单里加一行。
+ * ========================================================== */
+var RN_B64 = {
+  bg_classroom:'__RN_BG_CLASSROOM_B64__', bg_forest:'__RN_BG_FOREST_B64__', bg_treehouse:'__RN_BG_TREEHOUSE_B64__', dd_fall:'__RN_DD_FALL_B64__',
+  dd_glide:'__RN_DD_GLIDE_B64__', dd_hurt:'__RN_DD_HURT_B64__', dd_idle:'__RN_DD_IDLE_B64__', dd_jump:'__RN_DD_JUMP_B64__',
+  dd_land:'__RN_DD_LAND_B64__', dd_run01:'__RN_DD_RUN01_B64__', dd_run02:'__RN_DD_RUN02_B64__', dd_run03:'__RN_DD_RUN03_B64__',
+  dd_run04:'__RN_DD_RUN04_B64__', dd_slide:'__RN_DD_SLIDE_B64__', dd_win:'__RN_DD_WIN_B64__', fz_dash01:'__RN_FZ_DASH01_B64__',
+  fz_dash02:'__RN_FZ_DASH02_B64__', fz_dash03:'__RN_FZ_DASH03_B64__', fz_fall:'__RN_FZ_FALL_B64__', fz_hurt:'__RN_FZ_HURT_B64__',
+  fz_idle:'__RN_FZ_IDLE_B64__', fz_jump:'__RN_FZ_JUMP_B64__', fz_land:'__RN_FZ_LAND_B64__', fz_run01:'__RN_FZ_RUN01_B64__',
+  fz_run02:'__RN_FZ_RUN02_B64__', fz_run03:'__RN_FZ_RUN03_B64__', fz_run04:'__RN_FZ_RUN04_B64__', fz_slide:'__RN_FZ_SLIDE_B64__',
+  fz_win:'__RN_FZ_WIN_B64__', it_acorn:'__RN_IT_ACORN_B64__', it_book:'__RN_IT_BOOK_B64__', it_double:'__RN_IT_DOUBLE_B64__',
+  it_magnet:'__RN_IT_MAGNET_B64__', it_shield:'__RN_IT_SHIELD_B64__'
+};
+var RN_IMG = {};
+for(var _rk in RN_B64){
+  if(!RN_B64.hasOwnProperty(_rk)) continue;
+  /* 背景是 JPEG，其余是 PNG —— 按 base64 开头认，别写死 png 前缀 */
+  var _rmime = (RN_B64[_rk].indexOf('/9j/') === 0) ? 'image/jpeg' : 'image/png';
+  RN_IMG[_rk] = new Image();
+  RN_IMG[_rk].src = 'data:' + _rmime + ';base64,' + RN_B64[_rk];
+}
+/* 菜单卡片立绘换成跑酷里的 idle 帧：官方动作图比设定图抠的静态三视图更"活"，
+   而且和跑酷游戏本体用的是同一套素材，两个游戏看起来是一个世界。 */
+CAT_IMG = RN_IMG.fz_idle;
+OWL_IMG = RN_IMG.dd_idle;
+
+/* 跑酷动作帧画到「中心点 + 高度」，语义同 drawCharH，只是走另一套素材表 */
+function drawRN(name, cx, cy, h, flip){
+  var img = RN_IMG[name];
+  if(!(img && img.complete && img.naturalWidth > 0)) return false;
+  var w = h * (img.naturalWidth / img.naturalHeight);
+  ctx.save();
+  ctx.translate(cx, cy);
+  if(flip) ctx.scale(-1, 1);
+  ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  ctx.restore();
+  return true;
+}
+
+/* 按「装进 w×h 的框、保持比例」画一张角色图。
+   素材的宽高比各不相同（fz_front 0.76 / dd_front 0.91），
+   直接 drawImage 到固定框里会把窄的拉胖，必须等比内缩居中。 */
+function drawFit(img, x, y, w, h){
+  if(!(img && img.complete && img.naturalWidth > 0)) return false;
+  var s = Math.min(w / img.naturalWidth, h / img.naturalHeight);
+  var dw = img.naturalWidth * s, dh = img.naturalHeight * s;
+  ctx.drawImage(img, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+  return true;
+}
+/* 角色图画到「中心点 + 高度」——局内反馈用它，省得每处都算左上角 */
+function drawCharH(name, cx, cy, h, flip){
+  var img = CH_IMG[name];
+  if(!(img && img.complete && img.naturalWidth > 0)) return false;
+  var w = h * (img.naturalWidth / img.naturalHeight);
+  ctx.save();
+  ctx.translate(cx, cy);
+  if(flip) ctx.scale(-1, 1);
+  ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  ctx.restore();
+  return true;
+}
+/* 表情脸：统一装进 size×size 的方框居中（脸都是横宽的，按宽度对齐才不飘） */
+function drawFace(name, cx, cy, size){
+  return drawFit(CH_IMG[name], cx - size / 2, cy - size / 2, size, size);
+}
+/* 表情气泡：白圆底 + 细描边 + 表情脸。
+   局内反馈一律走它 —— 草地上直接贴一张表情脸会糊在背景里，白底才跳得出来。 */
+function drawEmote(name, cx, cy, size, alpha){
+  var img = CH_IMG[name];
+  if(!(img && img.complete && img.naturalWidth > 0)) return false;
+  var a = (alpha === undefined) ? 1 : clamp(alpha, 0, 1);
+  var r = size * 0.54;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.fillStyle = 'rgba(255,255,255,.95)';
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(60,80,70,.22)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+  ctx.save();
+  ctx.globalAlpha = a;
+  drawFace(name, cx, cy, size * 0.86);
+  ctx.restore();
+  return true;
+}
+/* 心情 → 表情名。mood: happy / smile / wow / sad / daze
+   每个角色有自己的一套脸；Fuzzy 没有「发呆」用「委屈」顶上，
+   Doodle 没有「委屈」用「发呆」顶上 —— 取不到就返回 null，调用方跳过。 */
+var MOOD_FALLBACK = { sad:'daze', daze:'sad' };
+function faceName(who, mood){
+  var p = (who === 'cat' || who === 'fz') ? 'fz' : 'dd';
+  var n = p + '_' + mood;
+  if(CH_IMG[n]) return n;
+  var alt = MOOD_FALLBACK[mood];
+  if(alt && CH_IMG[p + '_' + alt]) return p + '_' + alt;
+  return CH_IMG[p + '_happy'] ? p + '_happy' : null;
+}
+/* 游戏 id → 结算页站在分数旁边的角色（'cat' / 'owl' / 'both' 和 GAMES.who 同义） */
+function gameWho(){ return curGame().who || 'owl'; }
+window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
+  CH_IMG: CH_IMG, CH_B64: CH_B64, faceName: faceName, drawFace: drawFace,
+  drawCharH: drawCharH, drawEmote: drawEmote,
+  RN_IMG: RN_IMG, RN_B64: RN_B64, drawRN: drawRN
+});
+
+function drawCharImg(img, x, y, w, h){
+  return drawFit(img, x, y, w, h);
+}
 
 /* 掉落道具。三张 AI 出的图，同一套绘本画风，抠成透明底后 base64 内联。
    宽高比写死在这里 —— 素材是 128 高、宽度不等，绘制时按高度定尺寸、
    宽度乘比例，才不会被拉扁。换素材记得同步改这三个数。 */
-var ACORN_IMG = new Image(); ACORN_IMG.src = 'data:image/png;base64,__ACORN_B64__';
+var ACORN_IMG = RN_IMG.it_acorn;   /* 橡果改用跑酷官方素材（和跑酷游戏里捡的是同一颗） */
 var BUG_IMG   = new Image(); BUG_IMG.src   = 'data:image/png;base64,__BUG_B64__';
 var SHROOM_IMG= new Image(); SHROOM_IMG.src= 'data:image/png;base64,__SHROOM_B64__';
 var ITEM_IMG = { acorn:ACORN_IMG, bug:BUG_IMG, shroom:SHROOM_IMG };
+/* 宽高比兜底表：素材没解码完时用它。解码完的直接读真实比例（见 drawItemImg），
+   换素材不用再回来改这三个数。 */
 var ITEM_AR  = { acorn:0.758, bug:0.938, shroom:0.852 };
+/* 掉落道具图也暴露给测试（T23 要逐张确认解码）。
+   注意：上面的对象导出块跑在这一行之前，ITEM_IMG 那时还是 undefined，
+   所以要在这里再合并一次，不能只写在上面。 */
+window.__fsmExtras = Object.assign(window.__fsmExtras || {}, {
+  ITEM_IMG: ITEM_IMG, ACORN_IMG: ACORN_IMG, ITEM_AR: ITEM_AR
+});
 
-function drawCharImg(img, x, y, w, h){
-  if(img && img.complete && img.naturalWidth > 0){
-    ctx.drawImage(img, x, y, w, h);
-    return true;
-  }
-  return false;
-}
 /* 兜底：图没加载出来时用程序化画一个，保证永远不空白 */
 function drawFallbackCat(x, y, w, h){
   ctx.save();
@@ -87,7 +225,7 @@ var GAMES = [
     tip:'点两块互换；角标数字告诉你它属于哪里' },
   /* 节奏游戏：圆环按拍点收缩，孩子在合拍瞬间点屏幕。难度走 BPM + 切分。
      mode:'level' 复用 DIFFS 三档；banner 文案在 impl 里。 */
-  { id:'rhythm', name:'小猫的舞步', who:'owl', mode:'level', desc:'按鼓点节奏点圆环',
+  { id:'rhythm', name:'小猫的舞步', who:'cat', mode:'level', desc:'按鼓点节奏点圆环',
     tip:'听到鼓点时点圆环，对准拍点越准分越高' }
 ];
 
@@ -233,7 +371,12 @@ function cardMetrics(){
        方向键说明移到浏览器原生无障碍标签，避免在手机上占掉卡片空间。 */
     var reserve = 14 + 56 + 14 + 60 + 14;
     var avail = H - topY - reserve;
-    var h = Math.min(200, Math.max(112, Math.floor((avail - gap * (n - 1)) / n)));
+    /* 最小高度 96，不是 112。6 个游戏时公式算出来是 102，卡在 112 会让整列
+       多占 60px，把档位行顶到 y=888，而 startMenuRect 的 clamp 会把它按回 886
+       —— 两个矩形几乎完全重叠，「开始游戏」按钮画在档位按钮上面，点「普通」
+       实际点到的是开始按钮（T26 失败的真正原因，不是点击精度问题）。
+       96 是「角色 + 三行字」还读得清的下限，文字排版见 drawMenu 里的 tight 分支。 */
+    var h = Math.min(200, Math.max(96, Math.floor((avail - gap * (n - 1)) / n)));
     var w = W - 80, x0 = 40;
     return { w:w, gap:gap, x0:x0, h:h, y0:topY, ncol:1 };
   }
@@ -361,11 +504,13 @@ function hoverRing(r, rad){
    统一按高度定尺寸才不会有的胖有的瘦。 */
 function drawItemImg(kind, cx, cy, h, rot){
   var img = ITEM_IMG[kind];
-  var w = h * (ITEM_AR[kind] || 0.85);
+  var ready = !!(img && img.complete && img.naturalWidth > 0);
+  /* 宽度：素材解码完就读真实宽高比，没解码好才用兜底表 */
+  var w = h * (ready ? (img.naturalWidth / img.naturalHeight) : (ITEM_AR[kind] || 0.85));
   ctx.save();
   ctx.translate(cx, cy);
   if(rot) ctx.rotate(rot);
-  if(img && img.complete && img.naturalWidth > 0){
+  if(ready){
     ctx.drawImage(img, -w / 2, -h / 2, w, h);
   }else{
     drawFallbackItem(kind, w, h);
@@ -479,11 +624,22 @@ function drawMenu(){
       }
       /* 文字区：左对齐，从 charX + charW + 18 开始 */
       var tx = charX + charW + 18;
-      var yName = r.y + (tight ? 30 : 56);
-      var yDesc = r.y + (tight ? 52 : 84);
-      var yBest = r.y + (tight ? 74 : 110);
-      var yTip  = r.y + (tight ? 84 : 130);
-      var hTip  = tight ? 40 : 56;
+      /* 卡片矮（6 个游戏时 h≈102）时，四行内容按比例分配高度：
+         先扣掉提示条，再把「名字/说明/最高分」三行均分剩下的空间。
+         写死 30/52/74/84+40 在 h=102 下提示条会溢出卡片 22px 压到下一张上。 */
+      var yName, yDesc, yBest, yTip = 0, hTip = 0;
+      if(tight){
+        hTip = Math.min(30, Math.max(20, Math.round(r.h * 0.28)));
+        var span = r.h - 8 - (sel ? hTip + 6 : 0);
+        var stp = span / 3;
+        yName = r.y + 4 + stp * 0.80;
+        yDesc = r.y + 4 + stp * 1.80;
+        yBest = r.y + 4 + stp * 2.80;
+        if(sel) yTip = r.y + r.h - hTip - 4;
+      }else{
+        yName = r.y + 56; yDesc = r.y + 84; yBest = r.y + 110;
+        yTip  = r.y + 130; hTip = 56;
+      }
       ctx.textAlign = 'left';
       ctx.fillStyle = '#20402c';
       ctx.font = '500 ' + (tight ? 18 : 22) + 'px system-ui,sans-serif';
