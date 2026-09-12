@@ -52,27 +52,21 @@ function rec(id, name, pass, detail) {
   rec('V1', '线上加载零错误零警告', errs.length === 0 && warns.length === 0,
     `error=${errs.length} warning=${warns.length}${errs[0] ? ' | ' + errs[0].slice(0, 90) : ''}`);
 
-  /* V2 素材完整。立绘和道具都是 new Image() 建的，既不在 DOM 里也不挂在
-     window 上，没法直接枚举 —— 改成把线上 HTML 抓回来，抠出里面的 base64
-     逐个解码。这样验的是「用户真正拿到的那个文件」，SW 返回缓存也算进来。
-     base64 在构建环节被截断的话，本地测试看不出来，只有这一步能抓到。 */
-  /* 两个坑都改掉了：
-     1) list.length < 12 的上限是只有 5 张素材时写的，现在一共 18 张，
-        不提上限就只能验到前 12 张，后加的动物图线上坏了也发现不了
-     2) 正则只认 png，找不同的背景图是 JPEG，整张被漏掉 —— 改成整条
-        data URI 一起抓，mime 跟着走，不会把 JPEG 当 png 解不出来。
-     3) 直接 fetch(location.href) 拿到的是 CDN 缓存里的旧文件。上线后第一次
-        复验就撞上了：页面本身跑的是新版（V13 的 8 类景物位图全部解码成功），
-        但 fetch 回来只有 18 张素材，比构建产物少 8 张 —— 缓存 key 相同，
-        CDN 照旧把上一版 HTML 递了回来。所以取两份：带时间戳的那份绕开缓存
-        用来判，原 URL 那份只作参考，不一致说明缓存还没追上，提示但不判失败。 */
+  /* V2 素材完整。注意：光扫 HTML 里的 base64 字面量是不够的 ——
+     角色设定图（CH_B64）和跑酷动作帧（RN_B64）都是运行时拼 data URI 的，
+     正则只看得见 ANIMAL_SRC 这种字面量数组。旧版因此出现过「素材全挂了
+     但 V2 照样绿」，因为它的分档只认字面量里的 2 张立绘当基准。
+     现在两路都查：
+       a) 抓线上 HTML 抠字面量逐个解码 —— 验「用户真正下载到的文件」没被截断
+       b) 直接枚举运行时所有图片对象 —— 验映射表里的素材真的解码出来了
+     base64 在构建环节被截断的话，本地测试看不出来，只有 a 能抓到。 */
   const imgs = await page.evaluate(async () => {
     const bust = (u) => u + (u.indexOf('?') < 0 ? '?' : '&') + '_=' + Date.now();
     const grab = async (url) => {
       const html = await (await fetch(url)).text();
       const re = /data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]{200,}/g;
       const list = []; let m;
-      while ((m = re.exec(html)) !== null && list.length < 60) list.push(m[0]);
+      while ((m = re.exec(html)) !== null && list.length < 200) list.push(m[0]);
       return list;
     };
     const decode = async (list) => {
@@ -89,24 +83,50 @@ function rec(id, name, pass, detail) {
     };
     const fresh = await grab(bust(location.href));
     const asIs = await grab(location.href);
-    return { list: await decode(fresh), cached: asIs.length };
+
+    /* b) 运行时素材表：等所有图解码完（最多 3 秒）再判 */
+    const f = window.__fsm;
+    const groups = { chars: f.CH_IMG, runner: f.RN_IMG, animals: f.ANIMAL_IMG, items: f.ITEM_IMG };
+    const all = [];
+    for (const k in groups) {
+      const m = groups[k];
+      if (!m) continue;
+      (Array.isArray(m) ? m : Object.values(m)).forEach(im => all.push([k, im]));
+    }
+    const t0 = Date.now();
+    while (Date.now() - t0 < 3000 &&
+           all.some(([, im]) => !(im && im.complete && im.naturalWidth > 0))) {
+      await new Promise(r => setTimeout(r, 80));
+    }
+    const bad = [], counts = {};
+    for (const k in groups) {
+      const m = groups[k];
+      if (!m) { counts[k] = 'MISSING'; continue; }
+      const list = Array.isArray(m) ? m : Object.values(m);
+      let ok = 0;
+      list.forEach((im, i) => {
+        if (im && im.complete && im.naturalWidth > 0) ok++;
+        else bad.push(k + '[' + i + ']');
+      });
+      counts[k] = ok + '/' + list.length;
+    }
+    const bg = f.SPOT_BG_IMG;
+    return { list: await decode(fresh), cached: asIs.length, counts, bad,
+             bgOk: !!(bg && bg.complete && bg.naturalWidth > 0) };
   });
   const imgList = imgs.list;
-  /* 第四个坑：分档口径要能兜住所有素材，不然新加的图线上坏了也统计不到。
-     之前按 h 在 110~130 才算小素材，找不同的 bush(128×79)、cloud(128×83)、
-     butterfly(128×105) 三张整张漏验。改成按「比立绘小、比 50px 大」划档，
-     并加一条 unclassified 兜底：有任何一张没被归类就直接判失败。 */
-  const bigOnes = imgList.filter(d => d.w > 300);                          /* 场景背景 640×560 */
-  const chars = imgList.filter(d => d.w >= 150 && d.w <= 300 && d.h >= 150); /* 猫头鹰立绘 */
-  const items = imgList.filter(d => d.w > 50 && d.w < 150 && d.h < 150);     /* 道具/动物/景物 */
-  const unclassified = imgList.length - bigOnes.length - chars.length - items.length;
-  const imgsOk = imgList.every(d => d.w > 0 && d.h > 0) &&
-    chars.length >= 2 && items.length >= 23 && bigOnes.length >= 1 && unclassified === 0;
-  rec('V2', '全部素材（2 立绘 + 23 小图 + 1 背景）线上完整可解码', imgsOk,
-    `共 ${imgList.length} 张（立绘 ${chars.length} / 小图 ${items.length} / 背景 ${bigOnes.length}` +
-    `${unclassified ? ' / 未归类 ' + unclassified : ''}）` +
-    `${imgs.cached !== imgList.length ? `｜CDN 缓存仍是旧版（${imgs.cached} 张）` : ''}：` +
-    imgList.map(d => d.w > 0 ? `${d.w}×${d.h}` : 'DECODE-FAIL').join(' '));
+  /* 字面量那路的判据：每一张都能解码（这是唯一能抓「构建时被截断」的检查），
+     外加数量下限（防有人把素材整批删干净还全绿）。 */
+  const literalsOk = imgList.length >= 12 && imgList.every(d => d.w > 0 && d.h > 0);
+  const runtimeOk = Object.values(imgs.counts).every(v => /^\d+\/\d+$/.test(v) && !v.startsWith('0/')) &&
+                    imgs.bad.length === 0 && imgs.bgOk;
+  const imgsOk = literalsOk && runtimeOk;
+  rec('V2', '全部素材线上完整可解码（字面量 + 运行时素材表两路都验）', imgsOk,
+    `字面量 ${imgList.length} 张（解码失败 ${imgList.filter(d => !d.w).length}）｜ ` +
+    Object.entries(imgs.counts).map(([k, v]) => k + ' ' + v).join(' · ') +
+    ` · 找不同底图=${imgs.bgOk ? 'ok' : 'FAIL'}` +
+    (imgs.bad.length ? ` · 未解码: ${imgs.bad.join(',')}` : '') +
+    `${imgs.cached !== imgList.length ? `｜CDN 缓存仍是旧版（${imgs.cached} 张）` : ''}`);
 
   /* V3 掉落物尺寸。写死过 34，后来按画布短边改成 48。 */
   const szLand = await page.evaluate(() => ({ s: window.__fsm.itemSize(), W: window.__fsm.W, H: window.__fsm.H }));
@@ -407,8 +427,10 @@ function rec(id, name, pass, detail) {
   await clickAt(zSwap.x1, zSwap.y1); await wait(1500);   /* solvedT 36 帧 + 余量 */
   const zDone = await page.evaluate(() => ({
     s: window.__fsm.Game.state, sc: window.__fsm.Game.score, m: window.__fsm.Puz.moves }));
+  /* imgW 不写死 512：拼图图源换成跑酷官方场景远景后是 720px，
+     写死尺寸等于把「换了更好的素材」判成失败。只要求够大（≥512）即可。 */
   rec('V16', '拼图线上：3 张素材解码 + 交换生效 + 完美玩法拿满分 base',
-    zEnter.id === 'puzzle' && zEnter.n === 9 && zEnter.decoded === 3 && zEnter.imgW === 512 &&
+    zEnter.id === 'puzzle' && zEnter.n === 9 && zEnter.decoded === 3 && zEnter.imgW >= 512 &&
     zSwap.min === 1 && zDone.s === 'result' && zDone.m === 1 && zDone.sc === zSwap.base,
     `素材 ${zEnter.decoded}/3 张（${zEnter.imgW}px）｜ minSwaps=${zSwap.min} moves=${zDone.m} ` +
     `-> state=${zDone.s} score=${zDone.sc}（base=${zSwap.base}）`);
